@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.2
+
+### Patch Changes
+
+- be61982: updated repo information
+
 ## 0.0.12
 
 ### Patch Changes
