@@ -1,6 +1,6 @@
 {
   "name": "ioredis-toolkit",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Production-grade, type-safe Redis infrastructure for standalone, Sentinel, and Cluster deployments",
   "type": "module",
   "main": "./dist/index.js",
@@ -45,7 +45,6 @@
   },
   "author": "Anwar <anwarkamal1434@gmail.com>",
   "license": "MIT",
-
   "repository": {
     "type": "git",
     "url": "https://github.com/org-utils/ioredis-toolkit.git"
@@ -84,7 +83,6 @@
     "pubsub",
     "locking"
   ],
-
   "dependencies": {
     "ioredis": "^5.11.1",
     "zod": "^4.4.3"
