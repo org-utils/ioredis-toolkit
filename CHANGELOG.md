@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.3
+
+### Patch Changes
+
+- cb361c6: Updated author information
+
 ## 0.0.2
 
 ### Patch Changes
