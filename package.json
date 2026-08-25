@@ -70,8 +70,8 @@
     "changeset": "changeset",
     "version": "changeset version",
     "publish": "changeset publish",
-    "release": "npm run build && changeset publish",
-    "prebuild": "npm run typecheck",
+    "release": "bun build && changeset publish",
+    "prebuild": "bun typecheck",
     "test:unit": "vitest run test/cluster-slot.test.ts test/config.test.ts test/client.test.ts test/cache.test.ts test/ratelimiter.test.ts"
   },
   "keywords": [
@@ -99,7 +99,7 @@
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.1",
     "@types/node": "^26.2.0",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }
 }
