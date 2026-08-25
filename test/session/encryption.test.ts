@@ -8,7 +8,7 @@ import {
   StaticSessionKeyProvider,
 } from '../../src/session/session-encryption.js';
 import type { SessionKeyProvider } from '../../src/session/session-encryption.js';
-import { connectSuite, freshManager, invalidReason, suiteGuard } from './helpers.js';
+import { connectSuite, freshManager, invalidReason, suiteGuard, timingTolerant } from './helpers.js';
 
 const PREFIX = 't-encryption';
 
@@ -18,7 +18,7 @@ let ready = false;
 const gated = (title: string, fn: () => Promise<void>) =>
   it(title, async () => {
     if (!ready) return;
-    await fn();
+    await timingTolerant(fn);
   });
 
 /** Manager factory with a shared namespace (for cross-manager reads). */
@@ -37,12 +37,10 @@ function managerWith(client: Awaited<ReturnType<typeof connectSuite>>, ns: strin
 }
 
 describe('encrypted sessions (real Redis)', async () => {
-  try {
+  beforeAll(async () => {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  } catch {
-    return;
-  }
+  });
 
   gated('encrypted lifecycle: create, validate, touch, rotate, update, destroy', async () => {
     const keyProvider = createRandomSessionKeyProvider(1);

@@ -6,7 +6,7 @@ import { createSessionManager } from '../../src/session/session-manager.js';
 import type { SessionKeyProvider } from '../../src/session/session-encryption.js';
 import { createRandomSessionKeyProvider } from '../../src/session/session-encryption.js';
 import { StaticSessionKeyProvider } from '../../src/session/session-encryption.js';
-import { connectSuite, freshManager, invalidReason, suiteGuard } from './helpers.js';
+import { connectSuite, freshManager, invalidReason, suiteGuard, timingTolerant } from './helpers.js';
 
 const PREFIX = 't-security';
 
@@ -16,16 +16,14 @@ let ready = false;
 const gated = (title: string, fn: () => Promise<void>) =>
   it(title, async () => {
     if (!ready) return;
-    await fn();
+    await timingTolerant(fn);
   });
 
 describe('session security (real Redis)', async () => {
-  try {
+  beforeAll(async () => {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  } catch {
-    return;
-  }
+  });
 
   gated('rotation replay: same nonce replays, different nonce is invalid', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1 });

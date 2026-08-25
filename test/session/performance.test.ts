@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { connectSuite, freshManager, suiteGuard } from './helpers.js';
+import { connectSuite, freshManager, suiteGuard, timingTolerant } from './helpers.js';
 
 const PREFIX = 't-perf';
 
@@ -10,16 +10,14 @@ let ready = false;
 const gated = (title: string, fn: () => Promise<void>) =>
   it(title, async () => {
     if (!ready) return;
-    await fn();
+    await timingTolerant(fn);
   });
 
 describe('session performance (real Redis)', async () => {
-  try {
+  beforeAll(async () => {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  } catch {
-    return;
-  }
+  });
 
   gated('create + validate + destroy loop stays linear (no pathological blowup)', async () => {
     const m = freshManager(client!, PREFIX, {

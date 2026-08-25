@@ -10,7 +10,8 @@ import {
 } from '../../src/session/session-errors.js';
 import { SessionService } from '../../src/session/session-service.js';
 import type { SessionRepository } from '../../src/session/session-repository.js';
-import { connectSuite, freshManager, suiteGuard, testClientConfig } from './helpers.js';
+import { asWrapper, fakeClient } from '../helpers/fake-redis.js';
+import { connectSuite, freshManager, suiteGuard, timingTolerant } from './helpers.js';
 
 const PREFIX = 't-failure';
 
@@ -20,7 +21,7 @@ let ready = false;
 const gated = (title: string, fn: () => Promise<void>) =>
   it(title, async () => {
     if (!ready) return;
-    await fn();
+    await timingTolerant(fn);
   });
 
 /** Repository whose every operation throws like an infrastructure failure. */
@@ -52,12 +53,10 @@ function failingRepository(): SessionRepository {
 }
 
 describe('failure handling (fail closed)', async () => {
-  try {
+  beforeAll(async () => {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  } catch {
-    return;
-  }
+  });
 
   gated('repository failure surfaces as SessionStorageError, never "invalid"', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1 });
@@ -202,12 +201,8 @@ describe('failure handling (fail closed)', async () => {
   gated('revocation store read failure is fail-closed (503, not "valid")', async () => {
     // Dedicated client + manager so closing the connection cannot affect
     // the rest of the suite.
-    const c = new RedisClientWrapper({ ...testClientConfig(), maxRetries: 1, connectionTimeout: 1000 });
-    try {
-      await c.raw.ping();
-    } catch {
-      return; // Redis unavailable: skip.
-    }
+    const c = asWrapper(fakeClient());
+    await c.raw.ping();
     const m = freshManager(
       c,
       PREFIX,
@@ -226,12 +221,8 @@ describe('failure handling (fail closed)', async () => {
   });
 
   gated('revocation store rejects on closed connection with RevocationError', async () => {
-    const c = new RedisClientWrapper({ ...testClientConfig(), maxRetries: 1, connectionTimeout: 1000 });
-    try {
-      await c.raw.ping();
-    } catch {
-      return; // Redis unavailable: skip.
-    }
+    const c = asWrapper(fakeClient());
+    await c.raw.ping();
     const store = new RedisRevocationStore({ client: c, keyPrefix: `${PREFIX}-dead:revoked:` });
     await c.raw.quit();
 

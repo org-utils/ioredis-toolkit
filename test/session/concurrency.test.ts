@@ -5,7 +5,7 @@ import {
   SessionRevokedError,
   SessionRotationError,
 } from '../../src/session/session-errors.js';
-import { connectSuite, freshManager, suiteGuard } from './helpers.js';
+import { connectSuite, freshManager, suiteGuard, timingTolerant } from './helpers.js';
 
 const PREFIX = 't-concurrency';
 
@@ -15,16 +15,14 @@ let ready = false;
 const gated = (title: string, fn: () => Promise<void>) =>
   it(title, async () => {
     if (!ready) return;
-    await fn();
+    await timingTolerant(fn);
   });
 
 describe('session concurrency (real Redis)', async () => {
-  try {
+  beforeAll(async () => {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  } catch {
-    return;
-  }
+  });
 
   gated('parallel creates never exceed maxSessionsPerUser', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1, maxSessionsPerUser: 5 });

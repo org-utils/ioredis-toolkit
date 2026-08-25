@@ -99,6 +99,7 @@
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.1",
     "@types/node": "^26.2.0",
+    "ioredis-mock": "^8.13.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }

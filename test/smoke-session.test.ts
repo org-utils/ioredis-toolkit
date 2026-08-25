@@ -2,26 +2,13 @@ import { it } from 'vitest';
 import { RedisClientWrapper } from '../src/client.js';
 import { createSessionManager } from '../src/session/session-manager.js';
 import { createRandomSessionKeyProvider } from '../src/session/session-encryption.js';
-import { testClientConfig } from './session/helpers.js';
+import { asWrapper, fakeClient } from './helpers/fake-redis.js';
 
-// End-to-end smoke against a real Redis (default localhost:6379; honors
-// REDIS_MODE/REDIS_HOST/REDIS_PORT/REDIS_* like the session suites).
-// Skipped when no Redis is reachable so the default test suite stays
-// CI-friendly. The connection timeout is short so an unreachable host
-// skips fast instead of racing vitest's 5s per-test timeout.
-const client = new RedisClientWrapper({
-  ...testClientConfig(),
-  maxRetries: 1,
-  connectionTimeout: 1000,
-});
+// End-to-end session smoke running against ioredis-mock (no real Redis).
+const client: RedisClientWrapper = asWrapper(fakeClient());
 
 it('runs the full session smoke', async () => {
-  try {
-    await client.raw.ping();
-  } catch {
-    console.log('Redis not reachable - skipping session smoke test.');
-    return;
-  }
+  await client.raw.ping();
   await main();
 });
 

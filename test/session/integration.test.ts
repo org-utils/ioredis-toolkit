@@ -6,7 +6,7 @@ import {
   SessionConcurrencyError,
   SessionNotFoundError,
 } from '../../src/session/session-errors.js';
-import { connectSuite, freshManager, invalidReason, suiteGuard } from './helpers.js';
+import { connectSuite, freshManager, invalidReason, suiteGuard, timingTolerant } from './helpers.js';
 
 const PREFIX = "t-session";
 
@@ -17,16 +17,14 @@ let ready = false;
 const gated = (title: string, fn: () => Promise<void>) =>
   it(title, async () => {
     if (!ready) return; // Redis unavailable: skip silently.
-    await fn();
+    await timingTolerant(fn);
   });
 
 describe('session lifecycle (real Redis)', async () => {
-  try {
+  beforeAll(async () => {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  } catch {
-    return;
-  }
+  });
 
   gated('create -> validate -> touch -> destroy', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1 });
