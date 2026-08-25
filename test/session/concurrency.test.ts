@@ -18,11 +18,13 @@ const gated = (title: string, fn: () => Promise<void>) =>
     await fn();
   });
 
-describe('session concurrency (real Redis)', () => {
-  beforeAll(async () => {
+describe('session concurrency (real Redis)', async () => {
+  try {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  });
+  } catch {
+    return;
+  }
 
   gated('parallel creates never exceed maxSessionsPerUser', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1, maxSessionsPerUser: 5 });

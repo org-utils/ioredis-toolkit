@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 import { MockRedisClient } from './helpers/mock-ioredis.js';
 
-vi.mock('ioredis', async () => {
-  const { MockRedisClient } = await import('./helpers/mock-ioredis.js');
+vi.mock('ioredis',  () => {
   return {
     default: MockRedisClient,
     Cluster: MockRedisClient.Cluster,
@@ -13,14 +12,14 @@ vi.mock('ioredis', async () => {
 });
 
 import { RedisClientWrapper } from '../src/client.js';
-import type { ClusterRedisConfigInput } from '../src/types.js';
+import type { ClusterRedisConfigInput, RedisConfig } from '../src/types.js';
 import { silentLogger } from './helpers/fake-redis.js';
 
 const config = {
   mode: 'standalone',
   host: 'localhost',
   port: 6379,
-  password: 'secret',
+  // password: 'secret',
   maxRetries: 3,
   retryDelay: 100,
   connectionTimeout: 5000,
@@ -29,6 +28,7 @@ const config = {
 function rawClient(wrapper: RedisClientWrapper): MockRedisClient {
   return wrapper.getRawClient() as unknown as MockRedisClient;
 }
+
 describe('RedisClientWrapper', () => {
   let wrapper: RedisClientWrapper;
 
@@ -36,19 +36,7 @@ describe('RedisClientWrapper', () => {
     wrapper = new RedisClientWrapper(config, silentLogger);
   });
 
-  afterEach(async () => {
-    const clientsToClose = [wrapper];
 
-    await Promise.allSettled(
-      clientsToClose.map(async (client) => {
-        try {
-          await client.close();
-        } catch {
-          // Cleanup should never mask the original test failure.
-        }
-      }),
-    );
-  });
 
   it('creates a standalone client', () => {
     expect(wrapper.isCluster()).toBe(false);
@@ -114,22 +102,16 @@ describe('RedisClientWrapper', () => {
       silentLogger
     );
     try {
-       await slow.set('k', 'v');
-
-       await expect(slow.get('k')).resolves.toBe('v');
-     } finally {
-       await slow.close();
-     }
+      await slow.set('k', 'v');
+      expect(await slow.get('k')).toBe('v');
+    } finally {
+      await slow.close();
+    }
   });
 
-  // it('close quits the client', async () => {
-  //   await wrapper.close();
-  //   expect(await wrapper.ping()).toBe(false);
-  // });
-
-  it('close is safe and idempotent', async () => {
-    await expect(wrapper.close()).resolves.not.toThrow();
-    await expect(wrapper.close()).resolves.not.toThrow();
+  it('close quits the client', async () => {
+    await wrapper.close();
+    expect(await wrapper.ping()).toBe(false);
   });
 
   describe('cluster mode', () => {
@@ -141,47 +123,63 @@ describe('RedisClientWrapper', () => {
       ],
     };
 
-    it('creates a cluster client', () => {
+    it('creates a cluster client', async () => {
       const cluster = new RedisClientWrapper(clusterConfig, silentLogger);
-      expect(cluster.isCluster()).toBe(true);
-      expect(cluster.getClusterNodes()).toEqual([]);
+      try {
+        expect(cluster.isCluster()).toBe(true);
+        expect(cluster.getClusterNodes()).toEqual([]);
+      } finally {
+        await cluster.close();
+      }
     });
 
     it('mget groups keys by slot and falls back when getSlot is unavailable', async () => {
       const cluster = new RedisClientWrapper(clusterConfig, silentLogger);
-
-      await cluster.mset(['a', '1'], ['b', '2']);
-      expect(await cluster.mget('a', 'b')).toEqual(['1', '2']);
-      expect(await cluster.mget('a', 'b', 'c')).toEqual(['1', '2', null]);
+      try {
+        await cluster.mset(['a', '1'], ['b', '2']);
+        expect(await cluster.mget('a', 'b')).toEqual(['1', '2']);
+        expect(await cluster.mget('a', 'b', 'c')).toEqual(['1', '2', null]);
+      } finally {
+        await cluster.close();
+      }
     });
 
     it('mset splits pairs across slots and stores all of them', async () => {
       const cluster = new RedisClientWrapper(clusterConfig, silentLogger);
-
-      const result = await cluster.mset(['x', '1'], ['y', '2']);
-      expect(result).toBe('OK');
-      expect(await cluster.mget('x', 'y')).toEqual(['1', '2']);
+      try {
+        const result = await cluster.mset(['x', '1'], ['y', '2']);
+        expect(result).toBe('OK');
+        expect(await cluster.mget('x', 'y')).toEqual(['1', '2']);
+      } finally {
+        await cluster.close();
+      }
     });
 
     it('scanIterator scans all nodes', async () => {
       const cluster = new RedisClientWrapper(clusterConfig, silentLogger);
-
-      const keys: string[] = [];
-      for await (const key of cluster.scanIterator('*')) {
-        keys.push(key);
+      try {
+        const keys: string[] = [];
+        for await (const key of cluster.scanIterator('*')) {
+          keys.push(key);
+        }
+        expect(keys).toEqual([]);
+      } finally {
+        await cluster.close();
       }
-      expect(keys).toEqual([]);
     });
 
     it('calculateSlot uses real CRC16 with hash tag support', async () => {
       const cluster = new RedisClientWrapper(clusterConfig, silentLogger);
-
-      const withoutTag = cluster.calculateSlot('user:1001');
-      const taggedA = cluster.calculateSlot('{user}:a');
-      const taggedB = cluster.calculateSlot('{user}:b');
-      expect(taggedA).toBe(taggedB);
-      expect(withoutTag).toBeGreaterThanOrEqual(0);
-      expect(withoutTag).toBeLessThan(16384);
+      try {
+        const withoutTag = cluster.calculateSlot('user:1001');
+        const taggedA = cluster.calculateSlot('{user}:a');
+        const taggedB = cluster.calculateSlot('{user}:b');
+        expect(taggedA).toBe(taggedB);
+        expect(withoutTag).toBeGreaterThanOrEqual(0);
+        expect(withoutTag).toBeLessThan(16384);
+      } finally {
+        await cluster.close();
+      }
     });
   });
 });

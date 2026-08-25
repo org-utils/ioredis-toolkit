@@ -3,6 +3,7 @@ export class MockRedisClient {
 
   __store = new Map<string, { value: string | Buffer; expireAt: number | null }>();
   __calls: string[] = [];
+  __closed = false;
 
   constructor(..._args: unknown[]) {}
 
@@ -19,10 +20,14 @@ export class MockRedisClient {
   }
 
   async ping() {
+    if (this.__closed) {
+      throw new Error('Connection is closed.');
+    }
     return 'PONG';
   }
 
   async quit() {
+    this.__closed = true;
     return 'OK';
   }
 

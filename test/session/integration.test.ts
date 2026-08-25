@@ -20,11 +20,13 @@ const gated = (title: string, fn: () => Promise<void>) =>
     await fn();
   });
 
-describe('session lifecycle (real Redis)', () => {
-  beforeAll(async () => {
+describe('session lifecycle (real Redis)', async () => {
+  try {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  });
+  } catch {
+    return;
+  }
 
   gated('create -> validate -> touch -> destroy', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1 });

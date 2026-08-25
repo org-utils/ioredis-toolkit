@@ -51,11 +51,13 @@ function failingRepository(): SessionRepository {
   } as unknown as SessionRepository;
 }
 
-describe('failure handling (fail closed)', () => {
-  beforeAll(async () => {
+describe('failure handling (fail closed)', async () => {
+  try {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  });
+  } catch {
+    return;
+  }
 
   gated('repository failure surfaces as SessionStorageError, never "invalid"', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1 });

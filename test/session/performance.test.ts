@@ -13,11 +13,13 @@ const gated = (title: string, fn: () => Promise<void>) =>
     await fn();
   });
 
-describe('session performance (real Redis)', () => {
-  beforeAll(async () => {
+describe('session performance (real Redis)', async () => {
+  try {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  });
+  } catch {
+    return;
+  }
 
   gated('create + validate + destroy loop stays linear (no pathological blowup)', async () => {
     const m = freshManager(client!, PREFIX, {

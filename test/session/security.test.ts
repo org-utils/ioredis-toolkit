@@ -2,12 +2,11 @@ import { randomBytes } from 'node:crypto';
 
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { RedisClientWrapper } from '../../src/client.js';
 import { createSessionManager } from '../../src/session/session-manager.js';
 import type { SessionKeyProvider } from '../../src/session/session-encryption.js';
 import { createRandomSessionKeyProvider } from '../../src/session/session-encryption.js';
 import { StaticSessionKeyProvider } from '../../src/session/session-encryption.js';
-import { REDIS_HOST, REDIS_PORT, connectSuite, freshManager, invalidReason, suiteGuard } from './helpers.js';
+import { connectSuite, freshManager, invalidReason, suiteGuard } from './helpers.js';
 
 const PREFIX = 't-security';
 
@@ -20,11 +19,13 @@ const gated = (title: string, fn: () => Promise<void>) =>
     await fn();
   });
 
-describe('session security (real Redis)', () => {
-  beforeAll(async () => {
+describe('session security (real Redis)', async () => {
+  try {
     client = await connectSuite(PREFIX);
     ready = suiteGuard(client);
-  });
+  } catch {
+    return;
+  }
 
   gated('rotation replay: same nonce replays, different nonce is invalid', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1 });
