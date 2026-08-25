@@ -1,4 +1,4 @@
-import { describe, it } from 'vitest';
+import { it } from 'vitest';
 import { RedisClientWrapper } from '../src/client.js';
 import { createSessionManager } from '../src/session/session-manager.js';
 import { createRandomSessionKeyProvider } from '../src/session/session-encryption.js';
