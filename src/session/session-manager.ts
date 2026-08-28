@@ -43,6 +43,22 @@ export type SessionManagerOptions = {
   /** Injectable clock for tests. */
   now?: () => number;
 }
+export type WithSessionManagerOptions = {
+
+  /** Session configuration (defaults applied; see SessionConfigSchema). */
+  config?: PartialSessionConfig;
+  /**
+   * Encryption key provider. REQUIRED when config.encryption.enabled is
+   * true (fail at construction rather than at first write). The provider
+   * should be backed by a KMS/vault in production.
+   */
+  encryptionKeyProvider?: SessionKeyProvider;
+
+  /** Metrics adapter (no-op without it). */
+  metricsAdapter?: SessionMetricsAdapter;
+  /** Injectable clock for tests. */
+  now?: () => number;
+}
 
 export class SessionManager {
   readonly config: SessionConfig;

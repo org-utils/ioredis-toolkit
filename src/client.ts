@@ -35,6 +35,7 @@ import {
   createSessionManager,
   SessionManager,
   SessionManagerOptions,
+  WithSessionManagerOptions,
 } from "./session/session-manager.js";
 import { prettifyError } from "zod";
 import { RedisRevocationStore, RedisRevocationStoreOptions, RedisRevocationStoreOptionsInput, RedisRevocationStoreOptionsSchema } from "./session/revocation-store.js";
@@ -394,14 +395,14 @@ export class RedisClientWrapper {
 
     return this._session;
   }
-  withSession(value: Omit<SessionManagerOptions, "client">): RedisClientWrapper {
+  withSession(value: WithSessionManagerOptions): RedisClientWrapper {
     const revocationRedisStore = this.revocationStore;
-    const config = deepMerge( this.config.sessionOptions  ?? {},value) as Omit<SessionManagerOptions, "client">
-    const { revocationStore = revocationRedisStore, ...rest } = config ?? {};
+    const config = deepMerge( this.config.sessionOptions  ?? {},value) as WithSessionManagerOptions
+
     const newConfig = {
-      ...rest,
+      ...config,
       client: this,
-      revocationStore,
+      revocationStore: revocationRedisStore,
     }
     this.config.sessionOptions = newConfig;
     this._session = undefined;
