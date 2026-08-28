@@ -2,6 +2,79 @@ import type { Redis as RedisType } from "ioredis";
 import { z } from "zod";
 import type { SessionManagerOptions } from "./session/session-manager.js";
 
+
+// ============================================================================
+// Lock Types
+// ============================================================================
+
+/**
+ * Information about a distributed lock.
+ */
+export type LockInfo = {
+  /** Whether the lock is currently held. */
+  locked: boolean;
+  /** Remaining TTL in seconds (when held and TTL set). */
+  ttl?: number;
+  /** Unique owner id of the lock. */
+  lockId?: string;
+}
+
+/**
+ * Options for the distributed lock.
+ */
+export type DistributedLockOptions = {
+  /** Lock TTL in milliseconds. Default: `30000`. */
+  ttl?: number;
+  /** Number of acquisition attempts. Default: `3`. */
+  retryCount?: number;
+  /** Base delay between retries in ms (grows exponentially). Default: `200`. */
+  retryDelay?: number;
+}
+
+export const DistributedLockOptionsSchema = z.object({
+  ttl: z.coerce.number().int().positive().default(30000),
+  retryCount: z.coerce.number().int().positive().default(3),
+  retryDelay: z.coerce.number().int().positive().default(200)
+});
+export type DistributedLockInputOptions = z.input<typeof DistributedLockOptionsSchema>;
+
+
+
+// ============================================================================
+// Cache Types
+// ============================================================================
+
+export type CacheOptions = {
+  /**
+   * TTL in seconds.
+   *
+   * Falls back to the cache's `defaultTTL`.
+   */
+  ttl?: number;
+
+  /**
+   * Enable/disable compression.
+   *
+   * Default: true.
+   */
+  compress?: boolean;
+
+  /**
+   * Namespace prefix.
+   */
+  namespace?: string;
+};
+export const CacheOptionsSchema = z.object({
+  defaultTTL: z.number().int().min(0).default(3_600),
+
+  compressionThreshold: z.number().int().min(1).default(1_024),
+});
+export type CacheInputConfig = z.input<typeof CacheOptionsSchema>
+export type CacheStats = {
+  namespace: string;
+  connectionStatus: ConnectionStatus;
+};
+
 // ============================================================================
 // Rate Limiting
 // ============================================================================
@@ -107,18 +180,21 @@ export const BaseRedisConfigSchema = z
 
     maxBatchSize: z.number().int().min(1).max(10_000).default(500),
 
-    defaultTTL: z.number().int().min(0).default(3_600),
+    lockOptions: DistributedLockOptionsSchema.optional(),
 
-    compressionThreshold: z.number().int().min(1).default(1_024),
+    // defaultTTL: z.number().int().min(0).default(3_600),
 
+    // compressionThreshold: z.number().int().min(1).default(1_024),
+    cacheOptions: CacheOptionsSchema.optional(),
     slowCommandThreshold: z.number().int().min(0).default(1_000),
 
-    rateLimit: RateLimitOptionsSchema.default({
-      algorithm: "sliding",
-      duration: 60,
-      limit: 100,
-      namespace: "ratelimit",
-    }),
+    rateLimit: RateLimitOptionsSchema.optional(),
+    // rateLimit: RateLimitOptionsSchema.default({
+    //   algorithm: "sliding",
+    //   duration: 60,
+    //   limit: 100,
+    //   namespace: "ratelimit",
+    // }),
 
     sessionOptions: z.custom<Partial<SessionManagerOptions>>().optional(),
   })
@@ -256,64 +332,7 @@ export type RedisConfigForMode<M extends RedisMode> = M extends "cluster"
   ? SentinelRedisConfig
   : StandaloneRedisConfig;
 
-// ============================================================================
-// Cache Types
-// ============================================================================
 
-export type CacheOptions = {
-  /**
-   * TTL in seconds.
-   *
-   * Falls back to the cache's `defaultTTL`.
-   */
-  ttl?: number;
-
-  /**
-   * Enable/disable compression.
-   *
-   * Default: true.
-   */
-  compress?: boolean;
-
-  /**
-   * Namespace prefix.
-   */
-  namespace?: string;
-};
-
-export type CacheStats = {
-  namespace: string;
-  connectionStatus: ConnectionStatus;
-};
-
-// ============================================================================
-// Lock Types
-// ============================================================================
-
-export type LockOptions = {
-  /**
-   * Lock TTL in milliseconds.
-   */
-  ttl?: number;
-
-  /**
-   * Number of acquisition attempts.
-   */
-  retryCount?: number;
-
-  /**
-   * Base retry delay in milliseconds.
-   */
-  retryDelay?: number;
-};
-
-export type DistributedLockOptions = LockOptions;
-
-export type LockInfo = {
-  locked: boolean;
-  ttl?: number;
-  lockId?: string;
-};
 
 // ============================================================================
 // Health Types

@@ -2,30 +2,31 @@ import { RedisClientWrapper } from './client.js';
 import { RedisError } from './errors.js';
 import { randomBytes } from 'node:crypto';
 import { defaultLogger, LoggerLike } from './logger.js';
+import { DistributedLockOptions, LockInfo } from './types.js';
 
-/**
- * Information about a distributed lock.
- */
-export interface LockInfo {
-  /** Whether the lock is currently held. */
-  locked: boolean;
-  /** Remaining TTL in seconds (when held and TTL set). */
-  ttl?: number;
-  /** Unique owner id of the lock. */
-  lockId?: string;
-}
+// /**
+//  * Information about a distributed lock.
+//  */
+// export interface LockInfo {
+//   /** Whether the lock is currently held. */
+//   locked: boolean;
+//   /** Remaining TTL in seconds (when held and TTL set). */
+//   ttl?: number;
+//   /** Unique owner id of the lock. */
+//   lockId?: string;
+// }
 
-/**
- * Options for the distributed lock.
- */
-export interface DistributedLockOptions {
-  /** Lock TTL in milliseconds. Default: `30000`. */
-  ttl?: number;
-  /** Number of acquisition attempts. Default: `3`. */
-  retryCount?: number;
-  /** Base delay between retries in ms (grows exponentially). Default: `200`. */
-  retryDelay?: number;
-}
+// /**
+//  * Options for the distributed lock.
+//  */
+// export interface DistributedLockOptions {
+//   /** Lock TTL in milliseconds. Default: `30000`. */
+//   ttl?: number;
+//   /** Number of acquisition attempts. Default: `3`. */
+//   retryCount?: number;
+//   /** Base delay between retries in ms (grows exponentially). Default: `200`. */
+//   retryDelay?: number;
+// }
 
 /**
  * Distributed mutual-exclusion lock backed by Redis.

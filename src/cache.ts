@@ -1,6 +1,6 @@
 import { RedisClientWrapper } from './client.js';
 
-import { RedisConfig, CacheOptions } from './types.js';
+import { RedisConfig, CacheOptions, CacheInputConfig } from './types.js';
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 import { defaultLogger, LoggerLike } from './logger.js';
@@ -43,7 +43,7 @@ export class Cache {
    * const cache = new Cache(client, { defaultTTL: 600, compressionThreshold: 2048 });
    * ```
    */
-  constructor(client: RedisClientWrapper, config: RedisConfig, logger: LoggerLike = defaultLogger) {
+  constructor(client: RedisClientWrapper, config: CacheInputConfig, logger: LoggerLike = defaultLogger) {
     this.client = client;
     this.logger = logger.child({ component: 'Cache' });
     // this.config = config;

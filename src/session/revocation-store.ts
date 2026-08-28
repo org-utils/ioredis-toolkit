@@ -2,6 +2,7 @@ import type { RevocationRecord, RevocationStore } from './session-types.js';
 
 import type { RedisClientWrapper } from '../client.js';
 import { RevocationError, RevocationBatchError, redactIdentifier } from './session-errors.js';
+import z from 'zod';
 
 export interface RedisRevocationStoreOptions {
   /**
@@ -23,8 +24,17 @@ export interface RedisRevocationStoreOptions {
    * new RedisRevocationStore({ client, keyPrefix: 'auth:revoked:' });
    * ```
    */
-  keyPrefix?: string;
+  keyPrefix?: string | undefined;
 }
+
+// ============================================================================
+// Redis Revocations config
+// ============================================================================
+//
+export const RedisRevocationStoreOptionsSchema = z.object({
+  keyPrefix: z.string().optional(),
+});
+export type RedisRevocationStoreOptionsInput = z.input<typeof RedisRevocationStoreOptionsSchema>;
 
 /**
  * Redis-backed revocation store. Each revoked jti is stored as
@@ -81,7 +91,7 @@ export class RedisRevocationStore implements RevocationStore {
    */
   constructor(options: RedisRevocationStoreOptions) {
     this.client = options.client;
-    this.keyPrefix = options.keyPrefix ?? 'authcore:revoked:';
+    this.keyPrefix = options.keyPrefix ?? 'cache:revoked:';
   }
 
   /* ------------------------------------------------------------------------ */

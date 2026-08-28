@@ -324,7 +324,6 @@ export const SessionConfigSchema = z
       });
     }
   });
-
 /**
  * Compile-time guard: the schema and the documented interfaces must agree
  * in both directions, so the types can never drift from the validator.

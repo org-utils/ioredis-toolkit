@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { RedisClientWrapper } from './client.js';
 import { defaultLogger, LoggerLike } from './logger.js';
+import { RateLimitOptionsInput } from './types.js';
 
 /**
  * Window algorithm used by the rate limiter.
@@ -139,7 +140,7 @@ export class RateLimiter {
    */
   constructor(
     client: RedisClientWrapper,
-    options: RateLimitOptions = {},
+    options: RateLimitOptionsInput = {},
     logger: LoggerLike = defaultLogger
   ) {
     this.client = client;

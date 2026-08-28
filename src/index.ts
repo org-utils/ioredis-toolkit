@@ -111,7 +111,6 @@ export type {
   ClusterRedisConfig,
   RedisConfigForMode,
   CacheOptions,
-  LockOptions,
   LockInfo,
   DistributedLockOptions,
   HealthStatus,
