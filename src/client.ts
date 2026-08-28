@@ -6,6 +6,9 @@ import Redis, {
 
 import { ConfigurationError, RedisError } from "./errors.js";
 import {
+  type DistributedLockOptions,
+  RateLimitOptionsInput,
+  RateLimitOptionsSchema,
   RedisConfigSchema,
   type ClusterInfo,
   type ClusterRedisConfig,
@@ -16,6 +19,10 @@ import {
   type RedisMode,
   type SentinelRedisConfig,
   type StandaloneRedisConfig,
+  DistributedLockInputOptions,
+  DistributedLockOptionsSchema,
+  CacheInputConfig,
+  CacheOptionsSchema,
 } from "./types.js";
 import { defaultLogger, type LoggerLike } from "./logger.js";
 import { executeBySlot } from "./cluster.js";
@@ -23,12 +30,15 @@ import { calculateRedisClusterSlot } from "./cluster-slot.js";
 import { Cache } from "./cache.js";
 import { PubSub } from "./pubsub.js";
 import { DistributedLock } from "./lock.js";
-import { RateLimiter } from "./ratelimiter.js";
+import { RateLimiter, RateLimitOptions } from "./ratelimiter.js";
 import {
   createSessionManager,
   SessionManager,
+  SessionManagerOptions,
 } from "./session/session-manager.js";
 import { prettifyError } from "zod";
+import { RedisRevocationStore, RedisRevocationStoreOptions, RedisRevocationStoreOptionsInput, RedisRevocationStoreOptionsSchema } from "./session/revocation-store.js";
+import { deepMerge } from "./utils/deepmerge.js";
 
 // ============================================================================
 // Public Types
@@ -176,11 +186,12 @@ function isStandaloneConfig(
 export class RedisClientWrapper {
   private readonly client: RedisUnderlyingClient;
 
-  private _cache?: Cache;
+  private _cache?: Cache | undefined;
   private _pubsub?: PubSub;
-  private _lock?: DistributedLock;
-  private _rateLimiter?: RateLimiter;
-  private _session?: SessionManager;
+  private _lock?: DistributedLock | undefined;
+  private _rateLimiter?: RateLimiter | undefined;
+  private _session?: SessionManager | undefined;
+  private _revocationStore?: RedisRevocationStore;
 
   private readonly config: RedisConfig;
   private readonly logger: LoggerLike;
@@ -244,7 +255,7 @@ export class RedisClientWrapper {
     if (!this._cache) {
       this._cache = new Cache(
         this,
-        this.config,
+        this.config.cacheOptions ??  {},
         this.logger,
       );
     }
@@ -252,8 +263,23 @@ export class RedisClientWrapper {
     return this._cache;
   }
 
-  set cache(value: Cache) {
-    this._cache = value;
+  withCache(value: CacheInputConfig): RedisClientWrapper {
+    const parsed = CacheOptionsSchema.safeParse(value);
+    if (parsed.success) {
+      const data = { ...this.config.cacheOptions, ...parsed.data };
+      this.config.cacheOptions = data;
+    } else {
+      this.logger.error("Invalid cache options", { error: parsed.error });
+      throw new ConfigurationError(
+        `Invalid cache options: ${parsed.error.message}`,
+        {
+          message: prettifyError(parsed.error),
+        },
+      );
+
+    }
+    this._cache = undefined;
+    return this;
   }
 
   // ========================================================================
@@ -271,10 +297,6 @@ export class RedisClientWrapper {
     return this._pubsub;
   }
 
-  set pubsub(value: PubSub) {
-    this._pubsub = value;
-  }
-
   // ========================================================================
   // Distributed Lock
   // ========================================================================
@@ -284,14 +306,29 @@ export class RedisClientWrapper {
       this._lock = new DistributedLock(
         this,
         this.logger,
+        this.config.lockOptions
       );
     }
 
     return this._lock;
   }
 
-  set lock(value: DistributedLock) {
-    this._lock = value;
+  withLock(value: DistributedLockInputOptions): RedisClientWrapper {
+    const parseResult = DistributedLockOptionsSchema.safeParse(value);
+    if (parseResult.success) {
+      const data = { ...this.config.lockOptions, ...parseResult.data };
+      this.config.lockOptions = data;
+    } else {
+      this.logger.error("Invalid lock options", { error: parseResult.error });
+      throw new ConfigurationError(
+        `Invalid lock options: ${parseResult.error.message}`,
+        {
+          message: prettifyError(parseResult.error),
+        },
+      );
+    }
+    this._lock = undefined;
+    return this;
   }
 
   // ========================================================================
@@ -300,14 +337,41 @@ export class RedisClientWrapper {
 
   get rateLimiter(): RateLimiter {
     if (!this._rateLimiter) {
-      this._rateLimiter = new RateLimiter(this);
+      this._rateLimiter = new RateLimiter(this, this.config.rateLimit);
     }
 
     return this._rateLimiter;
   }
 
-  set rateLimiter(value: RateLimiter) {
-    this._rateLimiter = value;
+  withRateLimiter(value: RateLimitOptionsInput): RedisClientWrapper {
+    const parseResult = RateLimitOptionsSchema.safeParse(value);
+    if (parseResult.success) {
+      const data = { ...this.config.rateLimit, ...parseResult.data };
+      this.config.rateLimit = data;
+    } else {
+      this.logger.error("Invalid rate limit options", { error: parseResult.error });
+      throw new ConfigurationError(
+        `Invalid rate limit options: ${parseResult.error.message}`,
+        {
+          message: prettifyError(parseResult.error),
+        },
+      );
+    }
+    this._rateLimiter = undefined;
+    return this;
+  }
+
+
+  get revocationStore(): RedisRevocationStore {
+    if (!this._revocationStore) {
+      this._revocationStore = new RedisRevocationStore({
+        client: this
+
+      });
+      this.config.sessionOptions = { ...(this.config.sessionOptions ?? {}), revocationStore: this._revocationStore };
+    };
+
+    return this._revocationStore;
   }
 
   // ========================================================================
@@ -316,31 +380,32 @@ export class RedisClientWrapper {
 
   get session(): SessionManager {
     if (!this._session) {
-      const sessionOptions =
-        this.config.sessionOptions;
-
-      if (sessionOptions) {
-        const {
-          client: customClient,
-          ...options
-        } = sessionOptions;
-
-        this._session = createSessionManager({
-          client: customClient ?? this,
-          ...options,
-        });
-      } else {
-        this._session = createSessionManager({
-          client: this,
-        });
+      const options = this.config.sessionOptions ?? {};
+      const params = {
+        ...options,
+        client: this,
+        revocationStore:
+          options.revocationStore ?? this.revocationStore,
       }
+      this._session = createSessionManager(params);
+      this.config.sessionOptions = params
+
     }
 
     return this._session;
   }
-
-  set session(value: SessionManager) {
-    this._session = value;
+  withSession(value: Omit<SessionManagerOptions, "client">): RedisClientWrapper {
+    const revocationRedisStore = this.revocationStore;
+    const config = deepMerge( this.config.sessionOptions  ?? {},value) as Omit<SessionManagerOptions, "client">
+    const { revocationStore = revocationRedisStore, ...rest } = config ?? {};
+    const newConfig = {
+      ...rest,
+      client: this,
+      revocationStore,
+    }
+    this.config.sessionOptions = newConfig;
+    this._session = undefined;
+    return this;
   }
 
   // ========================================================================
@@ -414,6 +479,7 @@ export class RedisClientWrapper {
         scaleReads: "master",
 
         redisOptions: {
+
           ...common,
           connectTimeout:
             config.connectionTimeout,
