@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.4
+
+### Patch Changes
+
+- cb2cb0f: Updated client wrapper for withMethods options
+
 ## 0.0.3
 
 ### Patch Changes
