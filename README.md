@@ -1,111 +1,93 @@
 # ioredis-toolkit
 
-Production-grade Redis infrastructure for distributed systems: a unified client, cache, rate limiter, distributed lock, pub/sub and health checking — all working in **standalone**, **sentinel** and **cluster** modes.
+Production-grade, type-safe Redis infrastructure for distributed systems: a unified client, cache, rate limiter, distributed lock, pub/sub, health checking, and session management — all working in **standalone**, **sentinel**, and **cluster** modes.
 
-## Topology-safe client API
-
-The recommended entry point is `createRedisClient()`. Redis topology is a discriminated union, so configuration mistakes are rejected before a connection is created. Cluster-only administrative helpers are exposed by the factory only for cluster configurations.
-
-```ts
-import { createRedisClient } from 'ioredis-toolkit';
-
-const client = createRedisClient({
-  mode: 'cluster',
-  clusterNodes: [
-    { host: 'redis-1', port: 6379 },
-    { host: 'redis-2', port: 6379 },
-  ],
-});
-
-await client.set('{user:42}:profile', JSON.stringify({ id: 42 }));
-const slot = client.calculateSlot('{user:42}:profile');
-```
-
-For standalone/Sentinel, the same normal Redis API works automatically; no separate implementation is required. Sentinel uses ioredis master discovery/failover and Cluster uses ioredis slot routing. Cluster-only APIs such as `calculateSlot()` and `getClusterSlots()` are not part of the non-cluster factory type.
-
-### Important topology rules
-
-- Standalone: databases `0..15` are supported.
-- Sentinel: `SELECT` is available against the selected Sentinel master.
-- Cluster: database is always `0`; `SELECT` is unavailable.
-- Multi-key operations spanning slots are grouped and executed as bounded fan-out operations; they are not atomic across slots.
-- Lua scripts that need atomic multi-key behavior must use keys with the same hash tag, e.g. `{userId}:session` and `{userId}:index`.
-- Administrative namespace cleanup uses `SCAN`, never `KEYS`.
-
-
-## Features
-
-- **Unified client** (`RedisClientWrapper`) — one API for standalone / sentinel / cluster; all multi-key operations (`mget`, `mset`, `scanIterator`, ...) are slot-aware and cluster-safe
-- **Cache** (`Cache`) — JSON serialization, optional gzip compression, namespaces, TTLs, hash helpers and pattern-based cleanup
-- **Rate limiter** (`RateLimiter`) — generic, works for any resource (routes, users, IPs, API keys, databases, ...) with fixed and sliding windows
-- **Distributed lock** (`DistributedLock`) — atomic acquire/release, auto-extension, retries
-- **Pub/Sub** (`PubSub`) — publish, subscribe, pattern subscriptions
-- **Health checker** (`HealthChecker`) — periodic health monitoring with callbacks
-- **Session subsystem** (`createSessionManager`) — the production session stack: validation, retry-safe rotation, idle/absolute expiry, eviction ceilings, security versioning, optional AES-256-GCM encryption at rest, fail-closed circuit breaker, metrics and health
-- **Revocation store** (`RedisRevocationStore`) — TTL-backed token revocation with batch operations and fail-closed checks
-- **Lua scripts** (`eval` / `evalsha`) — atomic server-side logic, Cluster-safe when keys share a hash slot
-- **Observability** — pino-compatible logging and slow-command warnings
-
+<a name="installation"></a>
 ## Installation
 
 ```bash
 npm install ioredis-toolkit ioredis zod
 ```
 
-## Quick start
+<a name="quick-start"></a>
+## Quick Start
 
 ```ts
-import { RedisClient, Cache, RateLimiter } from 'ioredis-toolkit';
+import { RedisClientWrapper, Cache, RateLimiter } from 'ioredis-toolkit';
 
-// 1. Create the client
-const client = new RedisClient({
+// 1. Create the Redis client (standalone by default)
+const client = new RedisClientWrapper({
   mode: 'standalone',
   host: 'localhost',
   port: 6379,
 });
 
-// 2. Cache
+// 2. Cache — JSON serialization, TTL, namespaces, compression
 const cache = new Cache(client, { defaultTTL: 3600, compressionThreshold: 1024 });
 await cache.set('user:1', { name: 'alice' });
 const user = await cache.get('user:1');
 
-// 3. Rate limiting
+// 3. Rate limiting — per-route, per-IP, per-user
 const limiter = new RateLimiter(client, { limit: 100, duration: 60 });
 const result = await limiter.consume('/api/login', 'ip-10.0.0.1');
 if (!result.allowed) {
   // HTTP 429, set Retry-After: result.retryAfter
 }
 
-// 4. Shut down gracefully
+// 4. Graceful shutdown
 await client.close();
 ```
 
-## Connection modes
+<a name="topology"></a>
+## Topology & Configuration
 
-All features behave identically in every mode. Choose the mode via the `mode` config field.
+Choose the Redis topology via the `mode` config field. All features behave identically across modes; only the underlying connection changes.
 
-### Standalone
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `'standalone' \| 'sentinel' \| 'cluster'` | `'standalone'` | Redis topology |
+| `host` | `string` | `'localhost'` | Standalone host |
+| `port` | `number` | `6379` | Standalone port |
+| `url` | `string` | — | Full Redis URL (e.g. `redis://:pass@host:6379/0`) |
+| `password` | `string` | — | Authentication password |
+| `username` | `string` | — | Redis ACL username |
+| `database` | `number` | `0` | Database index (standalone/sentinel only) |
+| `sentinelNodes` | `Array<{host, port}>` | — | Sentinel nodes |
+| `sentinelMasterName` | `string` | — | Sentinel master name |
+| `clusterNodes` | `Array<{host, port}>` | — | Cluster nodes |
+| `maxRetries` | `number` | `3` | Max reconnect attempts |
+| `retryDelay` | `number` | `1000` | Base reconnect delay (ms) |
+| `connectionTimeout` | `number` | `5000` | Connect timeout (ms) |
+| `defaultTTL` | `number` | `3600` | Default cache TTL (seconds) |
+| `compressionThreshold` | `number` | `1024` | Cache compression threshold (bytes) |
+| `slowCommandThreshold` | `number` | `1000` | Log commands slower than this (ms) |
+| `tls` | `boolean` | `false` | Enable TLS (`tlsOptions` for CA/cert/key) |
+| `maxFanOutConcurrency` | `number` | `8` | Max concurrent fan-out operations in cluster |
+| `maxBatchSize` | `number` | `500` | Max batch size for SCAN operations |
+
+Configurations are validated with Zod (`RedisConfigSchema`). See [mode-specific configs](#mode-configs) below.
+
+### Mode-Specific Configurations
+
+#### Standalone
 
 ```ts
-const client = new RedisClient({
+const client = new RedisClientWrapper({
   mode: 'standalone',
   host: 'localhost',
   port: 6379,
   password: 'secret',
   database: 0,
 });
+
+// Or with a URL:
+const client = new RedisClientWrapper({ mode: 'standalone', url: 'redis://:secret@localhost:6379/0' });
 ```
 
-Or with a URL:
+#### Sentinel
 
 ```ts
-const client = new RedisClient({ mode: 'standalone', url: 'redis://:secret@localhost:6379/0' });
-```
-
-### Sentinel
-
-```ts
-const client = new RedisClient({
+const client = new RedisClientWrapper({
   mode: 'sentinel',
   sentinelNodes: [
     { host: 'sentinel1', port: 26379 },
@@ -116,10 +98,10 @@ const client = new RedisClient({
 });
 ```
 
-### Cluster
+#### Cluster
 
 ```ts
-const client = new RedisClient({
+const client = new RedisClientWrapper({
   mode: 'cluster',
   clusterNodes: [
     { host: 'redis1', port: 7000 },
@@ -130,25 +112,60 @@ const client = new RedisClient({
 });
 ```
 
-### Common configuration
+<a name="redisclient"></a>
+## RedisClientWrapper — The Unified Client
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `maxRetries` | number | `3` | Max reconnect attempts |
-| `retryDelay` | number | `1000` | Base reconnect delay (ms) |
-| `connectionTimeout` | number | `5000` | Connect timeout (ms) |
-| `defaultTTL` | number | `3600` | Default cache TTL (seconds) |
-| `compressionThreshold` | number | `1024` | Cache compression threshold (bytes) |
-| `slowCommandThreshold` | number | `1000` | Log commands slower than this (ms) |
-| `tls` | boolean | `false` | Enable TLS (`tlsOptions` for CA/cert/key) |
+The `RedisClientWrapper` is the core of the library. It automatically adapts to the configured topology (standalone, sentinel, or cluster) and lazily creates and shares sub-components: `cache`, `pubsub`, `lock`, `rateLimiter`, and `session`.
 
-Configs are validated with Zod (`RedisConfigSchema`).
+### Flow Diagram
 
-## RedisClient
+```text
++--------------------+     +----------------------+     +---------------------+
+|  RedisClientWrapper| --- |  Sub-components      | --- |  Redis (underlying) |
+|  (config mode)     |     |  cache/pubsub/lock   |     |  ioredis client     |
++--------------------+     +----------------------+     +---------------------+
+         ^                          ^                          |
+         |                          |                          |
+   lazy init                   lazy init                   lazy init
+         |                          |                          |
+   +-----v------+           +-----v-------+           +-----v-------+
+   |  get cache |           |   get lock  |           |  get rateLimiter|
+   +------------+           +-------------+           +---------------+
+```
 
-Full reference is in the generated `.d.ts` (JSDoc with params + examples). Highlights:
+### Convenience Accessors
 
-### Strings & keys
+`RedisClientWrapper` lazily creates and shares one instance of each sub-component. Access them as properties — no manual wiring needed:
+
+```ts
+// Shared instances (created on first access)
+client.cache;        // Cache
+client.pubsub;       // PubSub
+client.lock;         // DistributedLock
+client.rateLimiter;  // RateLimiter
+
+// Use them directly:
+await client.cache.set('user:1', { name: 'alice' });
+const ok = await client.lock.acquire('order:42');
+const { allowed } = await client.rateLimiter.consume('/api', 'ip-1', { limit: 5, duration: 60 });
+
+// Replace with custom instances:
+client.cache = new Cache(client, { defaultTTL: 600 });
+client.rateLimiter = new RateLimiter(client, { limit: 50, duration: 10 });
+```
+
+### Configuration
+
+```ts
+interface RedisClientOptions {
+  config: RedisConfigInput;
+  logger?: LoggerLike;
+}
+```
+
+### Basic Commands
+
+#### Strings & Keys
 
 ```ts
 await client.set('name', 'alice');              // SET
@@ -165,20 +182,19 @@ await client.incr('visits');                    // counters
 await client.decr('stock:sku-1');
 ```
 
-### Batch operations (cluster-safe)
+#### Batch Operations (Cluster-Safe)
 
 ```ts
 await client.mset(['user:1', 'alice'], ['user:2', 'bob']); // grouped by hash slot
 const [a, b] = await client.mget('user:1', 'user:2');      // routed per slot
 ```
 
-### Hashes, sets, sorted sets
+#### Hashes, Sets, Sorted Sets
 
 ```ts
 await client.hset('user:1', 'name', 'alice');
 await client.hget('user:1', 'name');
 await client.hgetall('user:1');
-await client.hdel('user:1', 'age');
 
 await client.sadd('tags:1', 'redis', 'typescript');
 await client.smembers('tags:1');
@@ -190,7 +206,7 @@ await client.zrange('leaderboard', 0, 9);
 await client.zrem('leaderboard', 'p1');
 ```
 
-### Scanning & pipelines
+#### Scanning & Pipelines
 
 ```ts
 // Scans every node in cluster mode
@@ -206,7 +222,7 @@ pipeline.incr('b');
 const results = await pipeline.exec();
 ```
 
-### Cluster helpers
+#### Cluster Helpers
 
 ```ts
 client.isCluster();                  // boolean
@@ -221,23 +237,11 @@ await client.mgetClusterAware([...]); // slot-grouped multi-get
 client.getClusterInfo();             // topology snapshot
 ```
 
-### Lifecycle & low-level
-
-```ts
-await client.ping();            // boolean
-await client.close();           // graceful QUIT
-client.raw;                     // raw ioredis client
-client.defineCommand(name, def);// custom commands (e.g. fastify-rate-limit)
-await client.info('memory');    // INFO output
-await client.select(1);         // standalone only
-```
-
-### Lua scripts (atomic server-side logic)
+#### Lua Scripts (Atomic Server-Side Logic)
 
 ```ts
 // EVAL: the first numKeys arguments are KEYS, everything else is ARGV.
-// Cluster mode: every key touched inside the script must be declared in
-// KEYS and share one hash slot.
+// Cluster mode: every key touched inside the script must be declared in KEYS and share one hash slot.
 const script = `
   if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('DEL', KEYS[1])
@@ -253,9 +257,7 @@ const sha = await client.scriptLoad(script);
 await client.evalsha(sha, script, 1, 'lock:job', 'owner-2'); // 0 (not owner)
 ```
 
-### Convenience accessors
-
-`RedisClient` lazily creates and shares one instance of each sub-component. Access them as properties — no manual wiring needed:
+#### Convenience Accessors (Session, PubSub, Lock, Cache)
 
 ```ts
 client.cache;        // shared Cache (created on first access)
@@ -263,21 +265,37 @@ client.pubsub;       // shared PubSub
 client.lock;         // shared DistributedLock
 client.rateLimiter;  // shared RateLimiter
 
-await client.cache.set('user:1', { name: 'alice' });
-const ok = await client.lock.acquire('order:42');
-const { allowed } = await client.rateLimiter.consume('/api', 'ip-1', { limit: 5, duration: 60 });
+// Session subsystem:
+const { token, session } = await manager.service.create({ userId: 'user-42' });
+const result = await manager.service.validate(token, { userId: 'user-42' });
 ```
 
-The corresponding setters replace the shared instance with a custom one (e.g. one built with different defaults):
+### Lifecycle
 
 ```ts
-client.cache = new Cache(client, config, logger);
-client.rateLimiter = new RateLimiter(client, { limit: 50, duration: 10 });
+await client.ping();            // boolean
+await client.close();           // graceful QUIT
+client.raw;                     // raw ioredis client
 ```
 
+<a name="cache"></a>
 ## Cache
 
-### Basic usage
+The `Cache` layer provides JSON serialization, optional gzip compression, namespaces, TTLs, hash helpers, and pattern-based cleanup. Works in all three modes.
+
+### Class: Cache
+
+```ts
+constructor(client: RedisClientWrapper, config: CacheInputConfig, logger: LoggerLike = defaultLogger)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `client` | `RedisClientWrapper` | The underlying Redis client |
+| `config` | `CacheInputConfig` | `defaultTTL` (seconds) and `compressionThreshold` (bytes) |
+| `logger` | `LoggerLike` | Optional pino-compatible logger; defaults to `console` |
+
+#### basic usage
 
 ```ts
 const cache = new Cache(client, { defaultTTL: 3600, compressionThreshold: 1024 });
@@ -291,23 +309,21 @@ await cache.expire('user:1', 60);
 await cache.ttl('user:1');
 ```
 
-- Values are JSON-serialized; strings/numbers/buffers are stored as-is.
-- Values larger than `compressionThreshold` bytes are gzip-compressed transparently.
-- `compress: false` disables compression for a single write.
+#### Namespaces
 
-### Namespaces
+Values stored under a namespace are prefixed with `namespace:`, keeping keys isolated.
 
 ```ts
 await cache.set('token', 'abc', { namespace: 'auth' });
 await cache.get('token', 'auth');          // 'abc'
-await cache.get('token');                  // null
+await cache.get('token');                  // null (no namespace)
 
 await cache.clearNamespace('sessions');    // delete every 'sessions:*' key
 await cache.keys('session:*');             // list keys (cluster-safe)
 await cache.deletePattern('temp:*');       // delete by pattern
 ```
 
-### Atomic & batch operations
+#### Atomic & Batch Operations
 
 ```ts
 await cache.setNX('job:1', 'worker-1', { ttl: 60 });   // only if missing
@@ -320,7 +336,7 @@ await cache.mset({ 'user:1': alice, 'user:2': bob }, { ttl: 300 }); // slot-grou
 const [a, b] = await cache.mget(['user:1', 'user:2']);
 ```
 
-### Hash helpers
+#### Hash Helpers
 
 ```ts
 await cache.hset('user:1', 'age', 30);
@@ -328,273 +344,588 @@ await cache.hget('user:1', 'age');       // 30
 await cache.hgetall('user:1');           // { age: 30, ... }
 ```
 
-## RateLimiter
+#### Compression
 
-Generic rate limiting for **any** resource — routes, API endpoints, users, IPs, API keys, database writes, email sends, webhooks...
+Values larger than `compressionThreshold` bytes are gzip-compressed transparently. Set `compress: false` to disable compression for a single write.
 
 ```ts
-const limiter = new RateLimiter(client, { limit: 100, duration: 60 });
-
-const result = await limiter.consume('/api/login', 'ip-10.0.0.1');
+await cache.set('large-data', bigBufferOrObject, { compress: false });
 ```
 
-### Result
+### Cache Interface — Method Documentation
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `set(key, value, options?)` | Store a value in cache | `key: string`, `value: T`, `options: CacheOptions = {}` | `Promise<boolean>` — `true` when stored |
+| `get(key, namespace?)` | Read a cached value | `key: string`, `namespace?: string` | `Promise<T \| null>` — parsed value or `null` |
+| `setNX(key, value, options?)` | Store only if key does not exist | `key: string`, `value: T`, `options: CacheOptions = {}` | `Promise<boolean>` — `true` only when stored |
+| `setEXNX(key, value, options?)` | Store atomically with TTL (SET ... EX NX) | `key: string`, `value: T`, `options: CacheOptions = {}` | `Promise<boolean>` — `true` only when stored |
+| `mget(keys, namespace?)` | Read multiple keys (cluster-safe) | `keys: string[]`, `namespace?: string` | `Promise<(T \| null)[]>` — values in input order |
+| `mset(entries, options?)` | Store multiple entries (cluster-safe, one pipeline per slot) | `entries: Record<string, T>`, `options: CacheOptions = {}` | `Promise<boolean>` — `true` when all stored |
+| `delete(key, namespace?)` | Delete a cache key | `key: string`, `namespace?: string` | `Promise<boolean>` — `true` if key existed |
+| `exists(key, namespace?)` | Check if key exists | `key: string`, `namespace?: string` | `Promise<boolean>` — `true` if key exists |
+| `expire(key, ttl, namespace?)` | Set TTL on existing key | `key: string`, `ttl: number`, `namespace?: string` | `Promise<boolean>` — `true` if TTL applied |
+| `ttl(key, namespace?)` | Get remaining TTL in seconds | `key: string`, `namespace?: string` | `Promise<number>` — seconds left (`-2` if missing, `-1` if no TTL) |
+| `increment(key, by?, namespace?)` | Atomically increment counter | `key: string`, `by?: number` (default `1`), `namespace?: string` | `Promise<number>` — new counter value |
+| `decrement(key, by?, namespace?)` | Atomically decrement counter | `key: string`, `by?: number` (default `1`), `namespace?: string` | `Promise<number>` — new counter value |
+| `hget(key, field, namespace?)` | Read a hash field | `key: string`, `field: string`, `namespace?: string` | `Promise<T \| null>` — field value JSON-parsed or raw string |
+| `hset(key, field, value, namespace?)` | Write a hash field | `key: string`, `field: string`, `value: any`, `namespace?: string` | `Promise<boolean>` — `true` if new field created |
+| `hgetall(key, namespace?)` | Read all hash fields | `key: string`, `namespace?: string` | `Promise<Record<string, T>>` — field-value map JSON-parsed |
+| `deletePattern(pattern, namespace?)` | Delete keys matching glob pattern (cluster-safe) | `pattern: string`, `namespace?: string` | `Promise<number>` — number of deleted keys |
+| `keys(pattern, namespace?)` | List keys matching glob pattern (cluster-safe) | `pattern: string`, `namespace?: string` | `Promise<string[]>` — matching keys |
+| `clearNamespace(namespace?)` | Delete every key inside a namespace | `namespace: string` | `Promise<number>` — number of deleted keys |
+
+<a name="ratelimiter"></a>
+## RateLimiter
+
+Generic rate limiting for any resource — routes, API endpoints, users, IPs, API keys, database writes, email sends, webhooks...
+
+### Algorithm Selection
+
+| Algorithm | Key Type | Characteristics |
+|---|---|---|
+| `sliding` (default) | sorted set + atomic Lua | Smoothest; precise rolling window |
+| `fixed` | counter (`INCR`/`EXPIRE`) | Cheapest; window resets at fixed boundaries |
+
+```ts
+// Sliding window (default)
+const limiter = new RateLimiter(client, { limit: 100, duration: 60 });
+
+// Fixed window
+const fixed = new RateLimiter(client, { limit: 10, duration: 1, algorithm: 'fixed' });
+```
+
+### RateLimiter — Type Documentation
+
+#### Class: RateLimiter
+
+```ts
+constructor(client: RedisClientWrapper, options: RateLimitOptionsInput = {}, logger: LoggerLike = defaultLogger)
+```
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `client` | `RedisClientWrapper` | — | The underlying Redis client |
+| `options.limit` | `number` | `100` | Maximum allowed requests within `duration` |
+| `options.duration` | `number` | `60` | Window length in seconds |
+| `options.algorithm` | `'fixed' \| 'sliding'` | `'sliding'` | Window algorithm |
+| `options.namespace` | `string` | `'ratelimit'` | Redis key prefix |
+
+#### RateLimitOptions type
+
+```ts
+interface RateLimitOptions {
+  limit?: number;    // Max allowed requests within duration
+  duration?: number; // Window length in seconds
+  algorithm?: RateLimitAlgorithm; // 'fixed' | 'sliding'
+  namespace?: string; // Key prefix
+}
+```
+
+#### RateLimitResult type
 
 ```ts
 interface RateLimitResult {
   allowed: boolean;    // request may proceed
   limit: number;       // configured max
   used: number;        // requests in current window
-  remaining: number;   // left in the window
+  remaining: number;   // left in the window (limit - used, floored at 0)
   resetAt: number;     // epoch ms when the window resets
   retryAfter: number;  // seconds to wait (0 when allowed)
 }
 ```
 
-### Usage in an HTTP handler
+#### RateLimitAlgorithm type
 
 ```ts
-const result = await limiter.consume('/api/orders', request.ip, { limit: 5, duration: 60 });
-if (!result.allowed) {
-  response.setHeader('Retry-After', String(result.retryAfter));
-  return response.status(429).json({ error: 'Too many requests' });
-}
+type RateLimitAlgorithm = 'fixed' | 'sliding';
 ```
 
-### Peek & reset
+### RateLimiter Methods
 
-```ts
-const state = await limiter.check('/api/search', 'user-1'); // no capacity consumed
-await limiter.reset('/api/export', 'user-7');               // grant full capacity again
-```
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `consume(resource, identifier, options?)` | Consume one unit of capacity | `resource: string`, `identifier: string`, `options: RateLimitOptions = {}` | `Promise<RateLimitResult>` — limit state |
+| `check(resource, identifier, options?)` | Peek at current limit state (no consumption) | `resource: string`, `identifier: string`, `options: RateLimitOptions = {}` | `Promise<RateLimitResult>` — current limit state |
+| `reset(resource, identifier, namespace?)` | Reset counter, grant full capacity | `resource: string`, `identifier: string`, `namespace?: string` | `Promise<boolean>` — `true` if counter existed and was removed |
+| `makeKey(resource, identifier, namespace?)` | Build the Redis key for a resource + identifier | `resource: string`, `identifier: string`, `namespace?: string` | `string` — e.g. `'ratelimit:/api/login:ip-10.0.0.1'` |
 
-### Algorithms
+#### Private Methods (algorithmic)
 
-| Algorithm | Key type | Characteristics |
-| --- | --- | --- |
-| `sliding` (default) | sorted set + atomic Lua | smoothest; precise rolling window |
-| `fixed` | counter (`INCR`/`EXPIRE`) | cheapest; window resets at fixed boundaries |
+| Method | Description |
+|---|---|
+| `consumeFixed(key, limit, duration)` | Fixed-window: `INCR`/`EXPIRE` based |
+| `consumeSliding(key, limit, duration)` | Sliding-window: atomic Lua over sorted set |
+| `checkFixed(key, limit, duration)` | Fixed-window peek |
+| `checkSliding(key, limit, duration)` | Sliding-window peek |
 
-```ts
-const fixed = new RateLimiter(client, { limit: 10, duration: 1, algorithm: 'fixed' });
-const perRoute = await fixed.consume('/api', 'user-1', { limit: 3, duration: 10 }); // per-call override
-```
-
-Keys are `ratelimit:{resource}:{identifier}` — each resource/identifier pair is tracked independently, so routes and callers never interfere. If Redis is unavailable the limiter **fails open** (allows requests) so an outage cannot take down the whole app.
-
+<a name="lock"></a>
 ## DistributedLock
 
-```ts
-const lock = new DistributedLock(client, { ttl: 30000, retryCount: 3, retryDelay: 200 });
+Atomic distributed mutual-exclusion lock backed by Redis. Works in standalone, sentinel, and cluster modes.
 
-await lock.acquire('order:42');        // boolean
-await lock.release('order:42');        // owner-checked Lua delete
-await lock.releaseForce('order:42');   // delete without ownership check
-await lock.withLock('order:42', async () => {
-  // exclusive section; TTL is auto-extended, lock released afterwards
-});
-await lock.extend('order:42', 60000);  // renew TTL while owned
-await lock.isLocked('order:42');
-await lock.getLockInfo('order:42');    // { locked, ttl, lockId }
-await lock.getLockOwner('order:42');   // lock id | null
-await lock.getLockTTL('order:42');     // seconds left
-await lock.cleanupAll();               // delete every lock:* key (tests/emergency)
-```
-
-## PubSub
+### Class: DistributedLock
 
 ```ts
-const pubsub = new PubSub(client);
-await pubsub.connectSubscriber(redisConfig); // dedicated subscriber connection
-
-await pubsub.subscribe('orders:created', (message) => {
-  console.log(message); // message payload (JSON-parsed)
-});
-await pubsub.publish('orders:created', { id: 1 }); // JSON-serialized
-
-await pubsub.unsubscribe('orders:created', handler); // one handler
-await pubsub.unsubscribe('orders:created');          // whole channel
-await pubsub.psubscribe('orders:*', ({ channel, message }) => {
-  // pattern handlers receive { channel, message }
-});
-await pubsub.punsubscribe('orders:*');
-await pubsub.close();       // closes subscriber only
-pubsub.getStats();          // { subscriptions, patternSubscriptions, connected }
+constructor(client: RedisClientWrapper, logger: LoggerLike = defaultLogger, options: Partial<DistributedLockOptions> = {})
 ```
 
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `client` | `RedisClientWrapper` | — | The underlying Redis client |
+| `logger` | `LoggerLike` | `defaultLogger` | Optional pino-compatible logger |
+| `options.ttl` | `number` | `30000` | Lock TTL in milliseconds |
+| `options.retryCount` | `number` | `3` | Number of acquisition attempts |
+| `options.retryDelay` | `number` | `200` | Base delay between retries (ms), grows exponentially |
+
+#### DistributedLockOptions type
+
+```ts
+type DistributedLockOptions = {
+  ttl?: number;        // Lock TTL in milliseconds. Default: `30000`.
+  retryCount?: number; // Number of acquisition attempts. Default: `3`.
+  retryDelay?: number; // Base delay between retries in ms (grows exponentially). Default: `200`.
+};
+```
+
+#### LockInfo type
+
+```ts
+type LockInfo = {
+  locked: boolean;     // Whether the lock is currently held
+  ttl?: number;        // Remaining TTL in seconds (when held and TTL set)
+  lockId?: string;     // Unique owner id of the lock
+};
+```
+
+### DistributedLock Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `acquire(key, ttl?)` | Attempt to acquire the lock | `key: string`, `ttl?: number` (ms) | `Promise<boolean>` — `true` when acquired |
+| `release(key)` | Release the lock (owner-checked) | `key: string` | `Promise<boolean>` — `true` if released, `false` if not owned or missing |
+| `releaseForce(key)` | Force-release without ownership check | `key: string` | `Promise<boolean>` — `true` if a lock existed and was deleted |
+| `extend(key, ttl?)` | Extend the lock TTL (owner-checked) | `key: string`, `ttl?: number` (ms) | `Promise<boolean>` — `true` if extended |
+| `isLocked(key)` | Check if lock is held | `key: string` | `Promise<boolean>` — `true` if lock exists |
+| `getLockInfo(key)` | Get lock details | `key: string` | `Promise<LockInfo>` — `{ locked, ttl, lockId }` |
+| `getLockOwner(key)` | Get the lock owner ID | `key: string` | `Promise<string \| null>` — lock id or `null` |
+| `getLockTTL(key)` | Get remaining TTL in seconds | `key: string` | `Promise<number>` — seconds left (`0` when not held or expired) |
+| `withLock(key, fn, options?)` | Acquire lock, run critical section, auto-extend, always release | `key: string`, `fn: () => Promise<T>`, `options: DistributedLockOptions = {}` | `Promise<T>` — return value of `fn` |
+| `cleanupAll()` | Delete every lock key (`lock:*`) from Redis | — | `Promise<number>` — number of deleted locks |
+
+<a name="pubsub"></a>
+## Pub/Sub
+
+Redis Pub/Sub with a dedicated publisher and subscriber connection. Messages are JSON-serialized on publish and auto-parsed on delivery. Extends `EventEmitter` and emits `'error'` on subscriber failures.
+
+### Class: PubSub
+
+```ts
+constructor(publisher: RedisClientWrapper, logger: LoggerLike = defaultLogger)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `publisher` | `RedisClientWrapper` | A Redis client used for publishing |
+| `logger` | `LoggerLike` | Optional pino-compatible logger; defaults to `console` |
+
+### PubSub — Type Documentation
+
+#### Event Map
+
+| Event | Payload |
+|---|---|
+| `message` | `{ channel: string, message: string }` |
+| `pmessage` | `{ pattern: string, channel: string, message: string }` |
+| `subscribe` | `{ channel: string, count: number }` |
+| `unsubscribe` | `{ channel: string, count: number }` |
+| `psubscribe` | `{ pattern: string, count: number }` |
+| `punsubscribe` | `{ pattern: string, count: number }` |
+| `error` | `Error` |
+
+### PubSub Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `connectSubscriber(config)` | Open a dedicated subscriber connection (idempotent) | `config: RedisConfig` | `Promise<void>` |
+| `publish(channel, message)` | Publish a message to a channel | `channel: string`, `message: T` (string or JSON-serializable) | `Promise<number>` — number of subscribers that received the message |
+| `subscribe(channel, handler)` | Subscribe a handler to a channel | `channel: string`, `handler: (data: T) => void` | `Promise<void>` |
+| `unsubscribe(channel, handler?)` | Remove a handler (or all handlers) from a channel | `channel: string`, `handler?: (data: T) => void` | `Promise<void>` |
+| `psubscribe(pattern, handler)` | Subscribe to all channels matching a glob pattern | `pattern: string`, `handler: (data: { channel: string; message: T }) => void` | `Promise<void>` |
+| `punsubscribe(pattern, handler?)` | Remove a handler from a pattern subscription | `pattern: string`, `handler?: (data: any) => void` | `Promise<void>` |
+| `close()` | Close the subscriber connection and clear all subscriptions | — | `Promise<void>` — closes subscriber only; publisher is not closed |
+| `getStats()` | Return subscription statistics | — | `PubSubStats` — `{ subscriptions, patternSubscriptions, connected }` |
+
+#### PubSubStats type
+
+```ts
+type PubSubStats = {
+  subscriptions: number;
+  patternSubscriptions: number;
+  connected: boolean;
+};
+```
+
+#### PubSubMessage type
+
+```ts
+type PubSubMessage<T = unknown> = {
+  channel: string;
+  message: T;
+};
+```
+
+<a name="health"></a>
 ## HealthChecker
 
-```ts
-const health = new HealthChecker(client);
-health.start(10000); // check every 10s
-health.onChange((status) => console.log(status));
+Periodic health monitoring with callbacks.
 
-const status = await health.check(); // ping + latency
-health.getStatus();                  // last result (null before first check)
-await health.waitForHealthy(30000);  // boolean
-health.stop();
+### Class: HealthChecker
+
+```ts
+constructor(client: RedisClientWrapper, logger: LoggerLike = defaultLogger)
 ```
 
-## Revocation store
+| Param | Type | Description |
+|---|---|---|
+| `client` | `RedisClientWrapper` | The underlying Redis client |
+| `logger` | `LoggerLike` | Optional pino-compatible logger; defaults to `console` |
 
-`RedisRevocationStore` supports refresh-token revocation workflows: short-lived entries (`revoked:{jti}`) so rotated/logged-out tokens are rejected for their remaining lifetime. It is framework-independent, works identically on standalone, Sentinel and Cluster, never stores raw tokens — only ids (`jti`) — and is the same store the session subsystem consults when `checkRevocationStore: true`.
+### HealthChecker Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `start(interval?)` | Start periodic health checks | `interval?: number` (ms, default `10000`) | `void` |
+| `stop()` | Stop the health checker | — | `void` |
+| `check()` | Run a single health check (ping + latency) | — | `Promise<HealthStatus>` — current health status |
+| `getStatus()` | Get the most recent health check result | — | `HealthStatus \| null` — last result (null before first check) |
+| `onChange(callback)` | Register a callback for status changes | `callback: (status: HealthStatus) => void` | `void` |
+| `waitForHealthy(timeout?)` | Wait until healthy (polling) | `timeout?: number` (ms, default `30000`) | `Promise<boolean>` — `true` if became healthy within timeout |
+
+#### HealthStatus type
 
 ```ts
-import { RedisRevocationStore } from 'ioredis-toolkit/session';
+type HealthStatus = {
+  healthy: boolean;
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  latency: number;        // ms
+  timestamp: Date;
+  details: {
+    ping: boolean;
+    connections?: number;
+    memory?: string;
+  };
+};
 ```
 
-### RedisRevocationStore
+<a name="session"></a>
+## Session Subsystem
 
-Each revoked jti is stored as `{prefix}{jti} -> reason` with a Redis TTL equal to the token's remaining lifetime, so expired entries are reclaimed automatically — no sweep job required. Every operation is single-key (or a slot-grouped pipeline for batches), so no hash tags are needed on any topology.
+The production session stack (`createSessionManager`): validation with fail-closed semantics, rotation with retry-safe idempotency, throttled touches, idle/absolute expiry, per-user eviction ceilings, security versioning, optional AES-256-GCM encryption at rest, fail-closed circuit breaker, metrics and health. Cluster-safe by construction.
+
+### Function: createSessionManager
 
 ```ts
-const revocations = new RedisRevocationStore({
-  client,
-  keyPrefix: 'authcore:revoked:',
-});
+createSessionManager(options: SessionManagerOptions): SessionManager
+```
 
-const expiry = Math.floor(Date.now() / 1000) + 86400;
+| Param | Type | Description |
+|---|---|---|
+| `options.client` | `RedisClientWrapper` | The underlying Redis client |
+| `options.config` | `PartialSessionConfig` | Session configuration (see SessionConfig type) |
+| `options.encryptionKeyProvider?` | `SessionKeyProvider` | REQUIRED when `config.encryption.enabled` is true |
+| `options.revocationStore?` | `RevocationStore` | External revocation store (JWT jti denylists etc.) |
+| `options.metricsAdapter?` | `SessionMetricsAdapter` | Metrics adapter (no-op without it) |
+| `options.circuitBreaker?` | `SessionCircuitBreaker` | Optional circuit breaker |
+| `options.now?` | `() => number` | Injectable clock for tests |
 
-// Revoke (single or batch)
-await revocations.revoke({ jti: 'a1b2c3d4', reason: 'logout', expiresAt: expiry });
-await revocations.revokeMany([
-  { jti: 'b2', reason: 'logout-all', expiresAt: expiry },
-  { jti: 'c3', reason: 'password-change', expiresAt: expiry },
-]);
+#### SessionManagerOptions type
 
-// Check (single or batch)
-await revocations.isRevoked('a1b2c3d4');              // boolean
-const revoked = await revocations.isRevokedMany(['b2', 'c3', 'd4']); // Set<string>
-
-if (revoked.has('b2')) {
-  // reject the token
+```ts
+type SessionManagerOptions = {
+  client: RedisClientWrapper;
+  config?: PartialSessionConfig;
+  encryptionKeyProvider?: SessionKeyProvider;
+  revocationStore?: RevocationStore;
+  metricsAdapter?: SessionMetricsAdapter;
+  circuitBreaker?: SessionCircuitBreaker;
+  now?: () => number;
 }
 ```
 
-Fail-closed semantics: if a batched command fails (Redis error, timeout, ...), `revokeMany` / `isRevokedMany` throw `RevocationBatchError` carrying the exact jtis that failed — a check can never silently treat a token as "not revoked" when its status is unknown.
-
-## Session subsystem
-
-The production session stack (`createSessionManager`): validation with
-fail-closed semantics, rotation with retry-safe idempotency, throttled
-touches, idle + absolute expiry, per-user eviction ceilings, security
-versioning, optional AES-256-GCM encryption at rest, an optional jti index
-for userId-free lookup, a fail-closed circuit breaker, metrics and health
-— all Cluster-safe by construction. It supersedes the historical
-`RedisSessionStore` (removed; see the migration note below).
-
-See `SESSION.md` (spec) and `docs/architecture.md` (decisions,
-deviations, exact semantics) before adopting it. Highlights:
+#### WithSessionManagerOptions type
 
 ```ts
-import { createSessionManager } from 'ioredis-toolkit/session';
-
-const manager = createSessionManager({
-  client,
-  config: {
-    enabled: true,              // explicit opt-in
-    namespace: 'authcore',
-    maxSessionsPerUser: 20,
-    securityVersion: { enabled: true },
-  },
-});
-await manager.init();           // preloads the Lua scripts
-
-const { token, session } = await manager.service.create({ userId: 'user-42' });
-
-// Validate: single round trip when userId is known. Never throws for
-// invalid sessions; throws (SessionStorageError) only on infra failure.
-const result = await manager.service.validate(token, { userId: 'user-42' });
-if (result.valid) { /* session is live */ }
-
-// Rotate with a retry-safe nonce (idempotent retries).
-const rotated = await manager.service.rotate(token, { userId: 'user-42', rotationNonce: 'uuid' });
-
-await manager.service.touch(token, { userId: 'user-42' });
-await manager.service.revoke(token, { userId: 'user-42' });       // tombstone
-await manager.service.revokeAll('user-42');                       // logout all devices
-await manager.service.setSecurityVersion('user-42', 2);           // invalidates old sessions
+type WithSessionManagerOptions = {
+  config?: PartialSessionConfig;
+  encryptionKeyProvider?: SessionKeyProvider;
+  metricsAdapter?: SessionMetricsAdapter;
+  now?: () => number;
+}
 ```
 
-- **Never stores the raw token** — only `jti = SHA-256(token)`.
-- **Validation results** are discriminated: `{ valid: true, session }` or
-  `{ valid: false, reason: 'invalid' | 'not_found' | 'expired' |
-  'idle_timeout' | 'revoked' | 'binding_mismatch' }`.
-- **Fail closed**: infra errors are `SessionStorageError` (503), never
-  "invalid"; a broken revocation-store read is a 503, not a 401. The
-  circuit breaker trips only on storage failures — bad tokens, consumed
-  sessions and concurrent-update conflicts can never open it.
-- **Idempotent creation**: `enableCreateIdempotency: true` + an
-  `idempotencyKey` on `create()` makes retries return the original
-  session (`replayed: true`) instead of duplicating it; the claim is
-  TTL-bounded, so replay windows cannot grow forever.
-- **Encryption at rest**: `encryption: { enabled: true }` +
-  `encryptionKeyProvider` (AES-256-GCM, key-versioned).
-- **Revocation store**: `RedisRevocationStore` plugs in via the
-  `revocationStore` option for external jti denylists.
-- **Manager surface**: `manager.service` (ops), `manager.metrics`,
-  `manager.health`, `manager.circuitBreaker`, `manager.cookies`,
-  `manager.token`, `manager.keys` — plus `manager.config`.
-- **Cookie helpers**: `manager.cookies.serialize(token)` returns the
-  `Set-Cookie` string; `serializeWithAttributes(token)` additionally
-  returns the structured cookie object
-  (`{ header, name, value, attributes: { path, domain?, httpOnly, secure,
-  sameSite, maxAge? } }`, types exported from both entry points).
+### SessionManager class
 
-### Session configuration
+```ts
+new SessionManager(options: SessionManagerOptions)
+```
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `enabled` | `false` | Explicit opt-in; the manager refuses to construct otherwise |
-| `namespace` | — | Key prefix (e.g. `authcore`) |
-| `ttl` | `2592000` (30d) | Absolute session lifetime in seconds |
-| `idleTimeout` | `86400` (24h) | Rolling idle timeout in seconds (`null` disables) |
-| `rolling` | `true` | `touch` extends the idle boundary |
-| `touchInterval` | `300` | Minimum seconds between touch writes (throttling) |
-| `maxSessionsPerUser` | `20` | Eviction ceiling, enforced atomically inside the create script |
-| `securityVersion` | off | Global per-user version; a bump invalidates older sessions |
-| `encryption` | off | AES-256-GCM envelopes (`enabled` + `encryptionKeyProvider`) |
-| `jtiIndex` | off | `jti -> userId` map so validate/touch/rotate work without `userId` |
-| `checkRevocationStore` | `false` | Consult the revocation store during validation |
-| `bindingPolicy` | `disabled` | `strict` rejects on IP/UA/device mismatch, `advisory` reports it |
-| `circuitBreaker` | off | `failureThreshold` 10, `resetTimeoutMs` 30_000, `halfOpenMaxRequests` 5 |
-| `enableCreateIdempotency` | `false` | Idempotent `create()` via `idempotencyKey` |
-| `retainConsumedTombstones` | `true` | Keep consumed records (TTL-bounded) for replay detection |
+Properties:
+- `config: SessionConfig` — normalized configuration
+- `service: SessionService` — the application-facing API
+- `repository: SessionRepository` — low-level data access
+- `metrics: SessionMetrics` — metrics tracking
+- `circuitBreaker: SessionCircuitBreaker \| null` — circuit breaker (or null)
+- `health: SessionHealthChecker` — health checking
+- `cookies: SessionCookieManager` — cookie helpers
+- `token: SessionTokenManager` — token generation/hashing
+- `keys: SessionKeyStrategy` — key strategy for userId mapping
 
-### Session errors
+### SessionConfig type documentation
 
-All session errors extend `SessionError` (itself a `RedisError`):
-`SessionNotFoundError`, `SessionExpiredError`, `SessionInvalidError`,
-`SessionRevokedError`, `SessionRotationError`, `SessionConcurrencyError`,
-`SessionStorageError` (503 — the only one that trips the circuit breaker),
-`SessionSerializationError`, `SessionConfigurationError`,
-`SessionBindingError`. Public error messages
-never contain raw tokens or identifiers.
+```ts
+type SessionConfig = {
+  enabled: boolean;              // Explicit opt-in; manager refuses to construct otherwise
+  namespace: string;             // Key prefix (e.g. 'authcore')
+  ttl: number;                   // Absolute session lifetime in seconds (default: 2592000 = 30d)
+  idleTimeout: number | null;    // Rolling idle timeout in seconds (default: 86400 = 24h, null disables)
+  rolling: boolean;              // touch extends the idle boundary (default: true)
+  touchInterval: number;         // Minimum seconds between touch writes (default: 300)
+  maxSessionsPerUser: number;    // Eviction ceiling, enforced atomically (default: 20)
+  securityVersion: {              // Global per-user version; bump invalidates older sessions
+    enabled: boolean;
+  };
+  encryption: {                  // AES-256-GCM envelopes
+    enabled: boolean;
+    encryptionKeyProvider: SessionKeyProvider;
+  };
+  jtiIndex: {                    // jti -> userId map so validate/touch/rotate work without userId
+    enabled: boolean;
+  };
+  checkRevocationStore: boolean; // Consult revocation store during validation (default: false)
+  bindingPolicy: 'disabled' | 'strict' | 'advisory'; // strict rejects on mismatch, advisory reports it
+  circuitBreaker: {              // Circuit breaker config
+    failureThreshold: number;    // default: 10
+    resetTimeoutMs: number;      // default: 30_000
+    halfOpenMaxRequests: number; // default: 5
+  };
+  enableCreateIdempotency: boolean; // Idempotent create() via idempotencyKey (default: false)
+  retainConsumedTombstones: boolean; // Keep consumed records (TTL-bounded) for replay detection (default: true)
+  limits: {                      // Hard limits
+    maxMetadataSize: number;     // max size of metadata in bytes
+    maxSessionsPerUserHardCap: number; // hard cap for listing sessions
+  };
+  health: {                      // Health check config
+    // ...
+  };
+};
+```
 
-- Tested end-to-end against standalone, Sentinel and Cluster — the
-  Sentinel topology (`test/infra/`) includes a **live failover drill**
-  (`sentinel-failover-probe.mjs`): sessions created before a master
-  outage stay valid on the promoted replica. The real-Redis suites skip
-  cleanly when Redis is unreachable.
+### Session Service Methods
 
-### Migration from `RedisSessionStore` (removed)
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `create(input)` | Create a session | `SessionCreateInput` | `Promise<CreatedSession>` — `{ token, session, replayed? }` |
+| `validate(token, options?)` | Validate a session token | `token: string`, `options: ValidateOptions = {}` | `Promise<SessionValidationResult>` — `{ valid: true, session? }` or `{ valid: false, reason }` |
+| `touch(token, options?)` | Refresh activity (throttled) | `token: string`, `options: TouchOptions = {}` | `Promise<TouchOutcome>` — outcome code |
+| `rotate(token, options?)` | Rotate to a new session (idempotent via nonce) | `token: string`, `options: RotateOptions = {}` | `Promise<RotatedSession>` — `{ token?, session, replayed }` |
+| `update(token, patch, options?)` | Patch update (optimistic concurrency) | `token: string`, `patch: SessionUpdatePatch`, `options: UpdateOptions = {}` | `Promise<SessionRecord>` |
+| `destroy(token, options?)` | Physically delete a session (idempotent) | `token: string`, `options: { userId?: string } = {}` | `Promise<boolean>` |
+| `revoke(token, options?)` | Logically revoke a session | `token: string`, `options: { userId?: string } = {}` | `Promise<string>` — outcome (`'revoked' \| 'already_revoked' \|\| 'not_found'`) |
+| `revokeAll(userId)` | Revoke every session of a user | `userId: string` | `Promise<number>` — number revoked |
+| `deleteByUser(userId)` | Delete every session of a user (physical) | `userId: string` | `Promise<string[]>` — deleted JTIs |
+| `findByUser(userId, options?)` | List a user's sessions (oldest first) | `userId: string`, `options: ListOptions = {}` | `Promise<SessionRecord[]>` |
+| `list(userId, options?)` | Alias of findByUser | `userId: string`, `options: ListOptions = {}` | `Promise<SessionRecord[]>` |
+| `setSecurityVersion(userId, version?)` | Bump security version, invalidate old sessions | `userId: string`, `version?: number` | `Promise<number>` — new version |
+| `getSecurityVersion(userId)` | Get current security version | `userId: string` | `Promise<number \| null>` |
+| `health()` | Dependency health check | — | `Promise<ReturnType<SessionHealthChecker['check']>>` |
 
-`RedisSessionStore` and its types (`SessionStore`, `LegacySessionRecord`,
-`CreateSessionInput`, `UpdateSessionInput`) are **removed**. The data and
-token models are incompatible, so old sessions cannot be read through the
-new API:
+#### SessionCreateInput type
 
-- The legacy store keyed sessions by a caller-supplied `jti` and stored
-  raw JSON; the subsystem persists token-derived jtis (`SHA-256(token)`)
-  in versioned envelopes and validates **tokens**, not jtis.
-- **Existing sessions must be re-established** (users re-authenticate).
-  For a smooth cutover, validate old tokens through a time-boxed
-  app-side shim (legacy jti lookup in your own data → mint a new session
-  via `create()`) and remove the shim once the old tokens age out.
-- Do not run both against the same Redis namespace — records and indexes
-  share the same key layout but use different formats.
+```ts
+type SessionCreateInput = {
+  userId: string;
+  deviceId?: string;             // stored when config.storeDeviceId is true
+  ipAddress?: string;            // stored when config.storeIpAddress is true
+  userAgent?: string;            // stored when config.storeUserAgent is true
+  metadata?: Record<string, unknown>; // bounded by config.maxMetadataSize
+  idempotencyKey?: string;      // when provided + enableCreateIdempotency, enables idempotent create
+};
+```
 
+#### CreatedSession type
+
+```ts
+type CreatedSession = {
+  token: string;                 // The raw session token. Give to client; store nowhere.
+  session: SessionRecord;        // The persisted session record (contains only jti, never the token)
+  replayed?: boolean;            // True when create was an idempotent replay
+};
+```
+
+#### SessionValidationResult type
+
+```ts
+type SessionValidationResult =
+  | { valid: true; session: SessionRecord; binding?: BindingMismatch }
+  | { valid: false; reason: SessionInvalidReason; session?: never };
+```
+
+#### SessionInvalidReason type
+
+```ts
+type SessionInvalidReason =
+  | 'not_found'
+  | 'expired'
+  | 'idle_timeout'
+  | 'absolute_timeout'
+  | 'revoked'
+  | 'invalid'
+  | 'binding_mismatch';
+```
+
+#### TouchOutcome type
+
+```ts
+type TouchOutcome =
+  | 'touched'
+  | 'skipped_throttled'
+  | 'skipped_stale'
+  | 'not_found'
+  | 'consumed'
+  | 'expired'
+  | 'idle_expired';
+```
+
+#### TouchOptions type
+
+```ts
+type TouchOptions = {
+  force?: boolean;   // Force a write regardless of touchInterval
+  userId?: string;   // When known, avoids JTI lookup index round trip
+};
+```
+
+#### RotateOptions type
+
+```ts
+type RotateOptions = {
+  rotationNonce?: string;  // Client-supplied random nonce for retry-safe rotation
+  userId?: string;         // Skip pre-flight GET, let Lua script be authoritative
+  expectedVersion?: number; // Optimistic concurrency: only rotate when version matches
+};
+```
+
+#### UpdateOptions type
+
+```ts
+type UpdateOptions = {
+  expectedVersion?: number; // Optimistic concurrency: only update when version matches
+  userId?: string;          // When known, avoids JTI lookup index round trip
+};
+```
+
+#### ListOptions type
+
+```ts
+type ListOptions = {
+  limit?: number;           // Max sessions to return (default: 100)
+  offset?: number;          // Skip first N sessions (oldest first)
+  includeInactive?: boolean; // Include consumed/revoked records (default: false)
+};
+```
+
+#### BindingMismatch type
+
+```ts
+type BindingMismatch = {
+  ipAddress: boolean;     // IP address mismatch
+  userAgent: boolean;     // User agent mismatch
+  deviceId: boolean;      // Device ID mismatch
+};
+```
+
+<a name="revocation"></a>
+## RedisRevocationStore
+
+Supports refresh-token revocation workflows: short-lived entries (`revoked:{jti}`) so rotated/logged-out tokens are rejected for their remaining lifetime. Framework-independent, works identically on standalone, Sentinel and Cluster, never stores raw tokens — only ids (`jti`).
+
+### Class: RedisRevocationStore
+
+```ts
+new RedisRevocationStore(options: RedisRevocationStoreOptions)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `options.client` | `RedisClientWrapper` | The underlying Redis client |
+| `options.keyPrefix` | `string` | Key prefix (e.g. `'authcore:revoked:'`) |
+
+#### RedisRevocationStoreOptions type
+
+```ts
+interface RedisRevocationStoreOptions {
+  client: RedisClientWrapper;
+  keyPrefix: string;
+}
+```
+
+### RedisRevocationStore Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `revoke(record)` | Revoke a single jti | `record: RevocationRecord` | `Promise<void>` |
+| `revokeMany(records)` | Revoke multiple jtis (batch) | `records: RevocationRecord[]` | `Promise<void>` — throws `RevocationBatchError` on failure |
+| `isRevoked(jti)` | Check if a single jti is revoked | `jti: string` | `Promise<boolean>` |
+| `isRevokedMany(jtis)` | Check multiple jtis (batch) | `jtis: string[]` | `Promise<Set<string>>` — set of revoked jtis that were found; throws `RevocationBatchError` on partial failure |
+
+#### RevocationRecord type
+
+```ts
+type RevocationRecord = {
+  jti: string;            // The JWT jti (base64url-encoded SHA-256 of the token)
+  expiresAt: number;      // Unix seconds after which this entry may be garbage collected
+  reason?: string;        // e.g. 'logout', 'logout-all', 'password-change'
+};
+```
+
+#### RevocationBatchError type
+
+Thrown when a batched command fails (Redis error, timeout, ...). Carries the exact jtis that failed — a check can never silently treat a token as "not revoked" when its status is unknown.
+
+<a name="lua-scripts"></a>
+## Lua Scripts (`eval` / `evalsha`)
+
+Atomic server-side logic. Cluster-safe when keys share a hash slot.
+
+### Usage
+
+```ts
+// EVAL: the first numKeys arguments are KEYS, everything else is ARGV.
+const script = `
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+  end
+  return 0
+`;
+await client.set('lock:job', 'owner-1');
+await client.eval(script, 1, 'lock:job', 'owner-1'); // 1 (deleted)
+
+// SCRIPT LOAD + EVALSHA
+const sha = await client.scriptLoad(script);
+await client.evalsha(sha, script, 1, 'lock:job', 'owner-2'); // 0 (not owner)
+```
+
+### Key Rules
+
+- **EVAL**: The first `numKeys` arguments are `KEYS`, everything else is `ARGV`.
+- **Cluster mode**: Every key touched inside the script must be declared in `KEYS` and share one hash slot (honored via hash tags `{tag}:...`).
+- **evalsha fallback**: If the script cache was flushed, `evalsha` automatically falls back to `EVAL`.
+
+<a name="errors"></a>
 ## Errors
+
+### RedisError
 
 ```ts
 import { RedisError } from 'ioredis-toolkit';
@@ -608,6 +939,25 @@ try {
 }
 ```
 
+### Common Error Codes
+
+| Code | When It Occurs |
+|---|---|
+| `CLUSTER_MODE` | Operations unavailable in cluster mode (e.g. `SELECT`) |
+| `LOCK_ACQUISITION_FAILED` | Lock could not be acquired after retries |
+| `LOCK_LOST` | Lock was lost during `withLock` execution |
+| `SessionStorageError` | Infra failure (503) — only one that trips the circuit breaker |
+| `SessionNotFoundError` | Session not found |
+| `SessionExpiredError` | Session absolute TTL passed |
+| `SessionInvalidError` | Session invalid (corrupt, cyclic metadata, etc.) |
+| `SessionRevokedError` | Session explicitly revoked |
+| `SessionRotationError` | Rotation failed (version conflict, successor collision, etc.) |
+| `SessionConcurrencyError` | Optimistic concurrency violation (version mismatch) |
+| `SessionSerializationError` | Session deserialization failed |
+| `SessionConfigurationError` | Invalid session configuration |
+| `SessionBindingError` | Binding policy mismatch (when strict) |
+
+<a name="logging"></a>
 ## Logging
 
 Every component accepts a pino-compatible logger (`trace/debug/info/warn/error/fatal` + `child`). Defaults to `console`.
@@ -615,13 +965,14 @@ Every component accepts a pino-compatible logger (`trace/debug/info/warn/error/f
 ```ts
 import { createLogger } from 'pino';
 const logger = createLogger();
-const client = new RedisClient(config, logger);
+const client = new RedisClientWrapper(config, logger);
 ```
 
-## Mode compatibility
+<a name="mode-compatibility"></a>
+## Mode Compatibility
 
 | Operation | Standalone | Sentinel | Cluster |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | Single-key commands (get/set/hash/set/zset/incr/...) | ✅ | ✅ | ✅ |
 | `mget` / `mset` / `mgetClusterAware` | ✅ | ✅ | ✅ slot-grouped |
 | `scanIterator` / `deletePattern` / `keys` | ✅ | ✅ | ✅ all nodes scanned |
@@ -632,14 +983,119 @@ const client = new RedisClient(config, logger);
 | `select(database)` | ✅ | ✅ | ❌ (Redis limitation) |
 | Hash-tag keys `{tag}:...` | ✅ | ✅ | ✅ same slot |
 
+<a name="development"></a>
 ## Development
 
 ```bash
-npm install
-npm run build       # tsc + asset copy (Lua scripts land in dist/session/scripts)
-npm run typecheck   # src + test + scripts (tsconfig.test.json)
-npm test            # vitest
-npm run test:watch
+npm install          # install dependencies
+npm run build        # tsc + asset copy (Lua scripts land in dist/session/scripts)
+npm run typecheck    # src + test + scripts (tsconfig.test.json)
+npm test             # vitest
+npm run test:watch   # vitest watch mode
+npm run format       # prettier --write 'src/**/*.ts'
 ```
 
 The test suite covers the client, cache and rate limiter (including cluster-mode behavior) using in-memory fakes — no Redis server required. The session suites are gated: they run against real Redis (`localhost:6379`, or `REDIS_MODE=cluster` / `REDIS_MODE=sentinel` with the compose topologies in `test/infra/`) and skip cleanly when it is unreachable.
+
+<a name="types"></a>
+## Type Exports
+
+The package exports comprehensive types for all modules. Key type exports:
+
+### Core Client Types
+
+| Type | Description |
+|---|---|
+| `RedisClientWrapper` | The unified client wrapper (standalone/sentinel/cluster) |
+| `createRedisClient` | Factory function: `createRedisClient(config)` — creates client for specified mode |
+| `RedisConfig` | Normalized Redis configuration (after Zod validation) |
+| `RedisConfigInput` | User-facing configuration input (validated with Zod) |
+| `RedisMode` | `'standalone' \| 'sentinel' \| 'cluster'` |
+| `RedisConfigForMode<M>` | Mode-specific config type |
+
+### Cache Types
+
+| Type | Description |
+|---|---|
+| `Cache` | Cache layer with JSON serialization, TTL, namespaces, compression |
+| `CacheOptions` | Options for cache operations (`ttl`, `compress`, `namespace`) |
+| `CacheInputConfig` | Constructor config (`defaultTTL`, `compressionThreshold`) |
+
+### Rate Limiting Types
+
+| Type | Description |
+|---|---|
+| `RateLimiter` | Rate limiter instance |
+| `RateLimitAlgorithm` | `'fixed' \| 'sliding'` |
+| `RateLimitOptions` | Options with defaults materialized (limit, duration, algorithm, namespace) |
+| `RateLimitResult` | Result of consume/check: allowed, limit, used, remaining, resetAt, retryAfter |
+
+### Distributed Lock Types
+
+| Type | Description |
+|---|---|
+| `DistributedLock` | Distributed lock instance |
+| `DistributedLockOptions` | Constructor options (ttl, retryCount, retryDelay) |
+| `LockInfo` | Lock info: `{ locked, ttl?, lockId? }` |
+
+### Pub/Sub Types
+
+| Type | Description |
+|---|---|
+| `PubSub` | Pub/sub instance |
+| `PubSubMessage<T>` | `{ channel: string; message: T }` |
+| `PubSubStats` | `{ subscriptions, patternSubscriptions, connected }` |
+
+### Health Types
+
+| Type | Description |
+|---|---|
+| `HealthStatus` | `{ healthy, status, latency, timestamp, details }` |
+
+### Session Types
+
+| Type | Description |
+|---|---|
+| `SessionManager` | Session manager composition root |
+| `SessionService` | Application-facing session API |
+| `SessionRecord` | Persisted session record |
+| `SessionCreateInput` | Input for `create()` |
+| `CreatedSession` | Result of `create()`: `{ token, session, replayed? }` |
+| `SessionValidationResult` | Result of `validate()` |
+| `SessionInvalidReason` | Invalid reason discriminant |
+| `TouchOutcome` | Touch outcome codes |
+| `RotateOptions` | Options for `rotate()` |
+| `UpdateOptions` | Options for `update()` |
+| `ListOptions` | Options for `findByUser`/`list()` |
+| `BindingMismatch` | Binding mismatch details |
+| `SessionStatus` | `'active' \| 'consumed' \| 'revoked'` |
+| `SessionStatus` | Session lifecycle state |
+| `RevocationRecord` | Revocation store record |
+| `RevocationStore` | Storage-agnostic revocation interface |
+
+### Configuration Types
+
+| Type | Description |
+|---|---|
+| `RedisCommonConfig` | Common config shared by all topologies |
+| `StandaloneRedisConfig` | Standalone-specific config |
+| `SentinelRedisConfig` | Sentinel-specific config |
+| `ClusterRedisConfig` | Cluster-specific config |
+| `RedisConfigInputSchema` | Zod schema for config validation |
+| `BaseRedisConfigSchema` | Base config schema (password, username, database, tls, etc.) |
+
+### Utility Types
+
+| Type | Description |
+|---|---|
+| `RedisError` | Base Redis error type |
+| `calculateRedisClusterSlot` | CRC16 slot calculation for cluster keys |
+| `hashTag` | Extract hash tag from key (`{tag}:key`) |
+
+<a name="changelog"></a>
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for recent changes.
+
+---
+*Generated with ioredis-toolkit v0.0.4*

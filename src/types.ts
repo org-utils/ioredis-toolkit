@@ -182,9 +182,6 @@ export const BaseRedisConfigSchema = z
 
     lockOptions: DistributedLockOptionsSchema.optional(),
 
-    // defaultTTL: z.number().int().min(0).default(3_600),
-
-    // compressionThreshold: z.number().int().min(1).default(1_024),
     cacheOptions: CacheOptionsSchema.optional(),
     slowCommandThreshold: z.number().int().min(0).default(1_000),
 

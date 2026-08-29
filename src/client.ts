@@ -240,10 +240,35 @@ export class RedisClientWrapper {
     this.setupEventHandlers();
   }
 
+  /**
+   * Creates a new Redis client wrapper supporting standalone, sentinel, and cluster topologies.
+   *
+   * The client automatically adapts to the configured Redis topology and lazily creates
+   * and shares sub-components: `cache`, `pubsub`, `lock`, `rateLimiter`, and `session`.
+   *
+     * @param config - Redis configuration (validated with Zod `RedisConfigSchema`).
+     *   Must include `mode` (standalone/sentinel/cluster), and topology-specific fields.
+     * @param logger - Optional pino-compatible logger; defaults to `console`.
+     *
+     * @example
+     * ```ts
+     * const client = new RedisClientWrapper({
+     *   mode: 'standalone',
+     *   host: 'localhost',
+     *   port: 6379,
+     * });
+     * ```
+     */
+
   // ========================================================================
   // Configuration
   // ========================================================================
 
+  /**
+   * Returns the Redis topology mode of this client.
+   *
+   * @returns `'standalone'`, `'sentinel'`, or `'cluster'`
+   */
   get mode(): RedisMode {
     return this.config.mode;
   }
@@ -252,6 +277,20 @@ export class RedisClientWrapper {
   // Cache
   // ========================================================================
 
+  /**
+   * Returns the shared Cache instance (lazily created on first access).
+   *
+   * The Cache provides JSON serialization, optional gzip compression, namespace
+   * support, TTLs, hash helpers, and pattern-based cleanup. All multi-key
+   * operations are slot-aware and cluster-safe.
+   *
+   * @example
+   * ```ts
+   * const cache = client.cache;
+   * await cache.set('user:1', { name: 'alice' });
+   * const user = await cache.get('user:1');
+   * ```
+   */
   get cache(): Cache {
     if (!this._cache) {
       this._cache = new Cache(
@@ -287,6 +326,22 @@ export class RedisClientWrapper {
   // Pub/Sub
   // ========================================================================
 
+  /**
+   * Returns the shared Pub/Sub instance (lazily created on first access).
+   *
+   * Publishing works immediately; subscribing requires calling {@link connectSubscriber}
+   * first. Messages are JSON-serialized on publish and auto-parsed on delivery.
+   *
+   * @example
+   * ```ts
+   * const pubsub = client.pubsub;
+   * await pubsub.connectSubscriber({ mode: 'standalone', host: 'localhost', port: 6379 });
+   * await pubsub.subscribe('orders:created', (message) => {
+   *   console.log(message); // { id: 1 }
+   * });
+   * await pubsub.publish('orders:created', { id: 1 });
+   * ```
+   */
   get pubsub(): PubSub {
     if (!this._pubsub) {
       this._pubsub = new PubSub(
@@ -302,6 +357,26 @@ export class RedisClientWrapper {
   // Distributed Lock
   // ========================================================================
 
+  /**
+   * Returns the shared DistributedLock instance (lazily created on first access).
+   *
+   * Provides atomic distributed mutual-exclusion locks backed by Redis. Works in
+   * standalone, sentinel, and cluster modes. Acquisition uses atomic `SET ... PX NX`;
+   * release and extension use Lua scripts so only the lock owner can release or extend.
+   *
+   * @example
+   * ```ts
+   * const lock = client.lock;
+   * const acquired = await lock.acquire('order:42');
+   * if (acquired) {
+   *   try {
+   *     // critical section
+   *   } finally {
+   *     await lock.release('order:42');
+   *   }
+   * }
+   * ```
+   */
   get lock(): DistributedLock {
     if (!this._lock) {
       this._lock = new DistributedLock(
@@ -336,6 +411,22 @@ export class RedisClientWrapper {
   // Rate Limiter
   // ========================================================================
 
+  /**
+   * Returns the shared RateLimiter instance (lazily created on first access).
+   *
+   * Generic rate limiting for any resource — routes, API endpoints, users, IPs,
+   * API keys, database writes, email sends, webhooks. Supports fixed and sliding
+   * window algorithms. Fails open when Redis is unavailable.
+   *
+   * @example
+   * ```ts
+   * const limiter = client.rateLimiter;
+   * const result = await limiter.consume('/api/login', 'ip-10.0.0.1');
+   * if (!result.allowed) {
+   *   // HTTP 429, set Retry-After: result.retryAfter
+   * }
+   * ```
+   */
   get rateLimiter(): RateLimiter {
     if (!this._rateLimiter) {
       this._rateLimiter = new RateLimiter(this, this.config.rateLimit);
@@ -379,6 +470,21 @@ export class RedisClientWrapper {
   // Session
   // ========================================================================
 
+  /**
+   * Returns the shared SessionManager instance (lazily created on first access).
+   *
+   * The production session stack: validation with fail-closed semantics, rotation
+   * with retry-safe idempotency, throttled touches, idle/absolute expiry, per-user
+   * eviction ceilings, security versioning, optional AES-256-GCM encryption at rest,
+   * fail-closed circuit breaker, metrics and health. Cluster-safe by construction.
+   *
+   * @example
+   * ```ts
+   * const manager = client.session;
+   * const { token, session } = await manager.service.create({ userId: 'user-42' });
+   * const result = await manager.service.validate(token, { userId: 'user-42' });
+   * ```
+   */
   get session(): SessionManager {
     if (!this._session) {
       const options = this.config.sessionOptions ?? {};

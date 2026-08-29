@@ -2,31 +2,51 @@ import { RedisClientWrapper } from './client.js';
 import { RedisError } from './errors.js';
 import { randomBytes } from 'node:crypto';
 import { defaultLogger, LoggerLike } from './logger.js';
-import { DistributedLockOptions, LockInfo } from './types.js';
 
-// /**
-//  * Information about a distributed lock.
-//  */
-// export interface LockInfo {
-//   /** Whether the lock is currently held. */
-//   locked: boolean;
-//   /** Remaining TTL in seconds (when held and TTL set). */
-//   ttl?: number;
-//   /** Unique owner id of the lock. */
-//   lockId?: string;
-// }
+/**
+ * Information about a distributed lock.
+ *
+ * **Fields:**
+ * - `locked`: Whether the lock is currently held.
+ * - `ttl`: Remaining TTL in seconds (when held and TTL set).
+ * - `lockId`: Unique owner id of the lock.
+ *
+ * **Example:**
+ * ```ts
+ * const info = await lock.getLockInfo('order:42');
+ * // { locked: true, ttl: 29, lockId: 'a1b2c3...' }
+ * ```
+ */
+export type LockInfo = {
+  /** Whether the lock is currently held. */
+  locked: boolean;
+  /** Remaining TTL in seconds (when held and TTL set). */
+  ttl?: number;
+  /** Unique owner id of the lock. */
+  lockId?: string;
+};
 
-// /**
-//  * Options for the distributed lock.
-//  */
-// export interface DistributedLockOptions {
-//   /** Lock TTL in milliseconds. Default: `30000`. */
-//   ttl?: number;
-//   /** Number of acquisition attempts. Default: `3`. */
-//   retryCount?: number;
-//   /** Base delay between retries in ms (grows exponentially). Default: `200`. */
-//   retryDelay?: number;
-// }
+/**
+ * Options for the distributed lock.
+ *
+ * **Fields:**
+ * - `ttl`: Lock TTL in milliseconds. Default: `30000`.
+ * - `retryCount`: Number of acquisition attempts. Default: `3`.
+ * - `retryDelay`: Base delay between retries in ms (grows exponentially). Default: `200`.
+ *
+ * **Example:**
+ * ```ts
+ * const lock = new DistributedLock(client, { ttl: 10000, retryCount: 5 });
+ * ```
+ */
+export interface DistributedLockOptions {
+  /** Lock TTL in milliseconds. Default: `30000`. */
+  ttl?: number;
+  /** Number of acquisition attempts. Default: `3`. */
+  retryCount?: number;
+  /** Base delay between retries in ms (grows exponentially). Default: `200`. */
+  retryDelay?: number;
+}
 
 /**
  * Distributed mutual-exclusion lock backed by Redis.
@@ -119,11 +139,13 @@ export class DistributedLock {
    *
    * @param key - The resource to lock, e.g. `'order:42'` (stored as `lock:order:42`).
    * @param ttl - Lock TTL in milliseconds (default: `30000`).
+   *
    * @returns `true` when the lock was acquired.
    *
    * @example
    * ```ts
    * const acquired = await lock.acquire('order:42', 10000);
+   * // acquired === true when lock was successfully acquired
    * ```
    */
   async acquire(key: string, ttl: number = this.defaultTTL): Promise<boolean> {
@@ -151,6 +173,7 @@ export class DistributedLock {
    * re-acquired by someone else) is never removed by the old owner.
    *
    * @param key - The locked resource.
+   *
    * @returns `true` if the lock was released, `false` if not owned or missing.
    *
    * @example
@@ -192,6 +215,7 @@ export class DistributedLock {
    * be gone. This is what `withLock` falls back to when a normal release fails.
    *
    * @param key - The locked resource.
+   *
    * @returns `true` if a lock existed and was deleted.
    *
    * @example
@@ -213,11 +237,13 @@ export class DistributedLock {
    *
    * @param key - The locked resource.
    * @param ttl - New TTL in milliseconds (default: `30000`).
+   *
    * @returns `true` if the lock was extended.
    *
    * @example
    * ```ts
    * const extended = await lock.extend('order:42', 30000);
+   * // extended === true when lock TTL was renewed
    * ```
    */
   async extend(key: string, ttl: number = this.defaultTTL): Promise<boolean> {
@@ -255,7 +281,9 @@ export class DistributedLock {
    * @param key - The resource to lock.
    * @param fn - The critical section to run exclusively.
    * @param options - Per-call `ttl` (ms), `retryCount`, `retryDelay`.
+   *
    * @returns The return value of `fn`.
+   *
    * @throws {@link RedisError} with code `LOCK_ACQUISITION_FAILED` when the lock
    *   cannot be acquired, or `LOCK_LOST` when the lock expired mid-execution.
    *
@@ -356,6 +384,7 @@ export class DistributedLock {
    * Checks whether a lock is currently held.
    *
    * @param key - The locked resource.
+   *
    * @returns `true` if the lock exists (held by anyone).
    *
    * @example
@@ -373,6 +402,7 @@ export class DistributedLock {
    * Returns details about a lock.
    *
    * @param key - The locked resource.
+   *
    * @returns `{ locked: false }` when not held, otherwise `{ locked: true, ttl, lockId }`.
    *
    * @example
@@ -412,6 +442,7 @@ export class DistributedLock {
    * Returns the owner id of a lock.
    *
    * @param key - The locked resource.
+   *
    * @returns The lock id (random hex token), or `null` when not held.
    *
    * @example
@@ -428,6 +459,7 @@ export class DistributedLock {
    * Returns the remaining TTL of a lock in seconds.
    *
    * @param key - The locked resource.
+   *
    * @returns Remaining seconds (`0` when not held or expired).
    *
    * @example
