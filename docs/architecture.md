@@ -69,3 +69,51 @@ or false health positives.
 Retry configuration is conservative. Retrying non-idempotent commands is delegated
 to ioredis command semantics rather than implementing a second retry layer in this
 package.
+
+## Post-implementation review notes
+
+The sections below record defects found during a second-pass architecture/security
+review of the already-implemented session subsystem (per the "do not stop at tests
+passing" requirement), and how they were resolved. Existing infrastructure and
+session code were reused as-is wherever it was already correct; only the specific
+defect below required a change.
+
+### Fixed: user-index eviction did not reliably evict the oldest session
+
+**Where:** `src/session/scripts/create.lua`, `rotate.lua`, `rotate-encrypted.lua`.
+
+**Defect:** `maxSessionsPerUser` eviction (and the successor's index entry on
+rotation) scored the user's session index ZSET with second-granularity
+`createdAt`/`TIME()[1]`. Redis breaks ties on equal ZSET scores by lexicographic
+order of the *member* (the session's jti - a random, unordered value), not by
+insertion order. Any user creating (or rotating into) more than one session within
+the same wall-clock second - an ordinary occurrence under real traffic, not a
+contrived edge case - could have `ZRANGE index 0 n-1` evict a lexicographically-
+arbitrary session instead of the actual oldest one. The cap itself was still
+enforced correctly (session count never exceeded the limit), but the "oldest-first"
+ordering guarantee described in the specification (§21-§22) silently did not hold.
+This was caught by strengthening a previously-unasserted smoke-test observation
+into a real assertion, plus a targeted `ioredis-mock` reproduction that confirmed
+the tie-break behavior directly.
+
+**Fix:** the eviction-ordering score is now computed inside the same atomic script
+from `redis.call('TIME')` at microsecond resolution (`seconds + micros/1e6`)
+instead of from the record's second-granularity `createdAt`. This is intentionally
+*not* used as the record's `createdAt` field (which remains app-stamped seconds,
+unaffected) - it exists solely as a strictly-ordered eviction key. Because Redis
+executes commands (and Lua scripts) single-threaded, two scripts touching the same
+user's hash-tagged slot can never observe the same `TIME()` reading in practice, so
+this gives deterministic, clock-skew-free FIFO ordering per user without adding a
+Redis round trip or any cross-slot state.
+
+A corresponding test-harness defect was fixed alongside it: the `ioredis-mock` Lua
+`TIME()` shim in `test/helpers/fake-redis.ts` hardcoded the microsecond component
+to `'0'` on every call, which would have silently masked exactly this class of fix
+under test (though not in production, where real Redis returns genuine increasing
+microseconds). The shim now returns a monotonically incrementing counter for the
+microsecond component so this property is actually exercised by the test suite.
+
+**Residual risk:** none identified. The fix only changes an internal ordering key
+used for eviction; it does not change the session record schema, does not affect
+existing stored sessions (the score is recomputed on the next create/rotate for
+that user), and does not weaken any of the security invariants in §1.

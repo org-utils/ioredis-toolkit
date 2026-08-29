@@ -153,5 +153,3 @@ media/
 .firebase/
 .serverless/
 .aws-sam/
-
-.opencode/

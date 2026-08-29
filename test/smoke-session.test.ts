@@ -100,6 +100,13 @@ async function main() {
   console.log('9. eviction: sessions for user-2 =', list.length, '(expect 3)');
   const old = await manager.service.validate(tokens[0]!, { userId: 'user-2' });
   console.log('   evicted oldest:', old.valid ? 'still valid(!)' : `rejected(${old.reason})`);
+  if (old.valid) {
+    throw new Error(
+      'max-session eviction did not evict the oldest session: expected the first-created ' +
+        'session to be evicted first, but it still validates',
+    );
+  }
+  if (list.length !== 3) throw new Error(`expected 3 sessions after eviction, got ${list.length}`);
 
   // 10. security version invalidation
   await manager.service.setSecurityVersion('user-2');

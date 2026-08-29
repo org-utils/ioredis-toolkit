@@ -1,7 +1,8 @@
 -- create.lua (version 1)
 -- Atomically creates a session record, registers it in the user index
--- (ZSET, score = createdAt), optionally claims an idempotency key, and
--- enforces maxSessionsPerUser with bounded oldest-first eviction.
+-- (ZSET, score = microsecond-resolution Redis server time, used purely
+-- for eviction ordering - see below), optionally claims an idempotency
+-- key, and enforces maxSessionsPerUser with bounded oldest-first eviction.
 --
 -- KEYS[1] = session record key
 -- KEYS[2] = user session index key (ZSET)
@@ -44,7 +45,21 @@ if redis.call('EXISTS', key) == 1 then
 end
 
 redis.call('SET', key, ARGV[1], 'EX', tonumber(ARGV[4]))
-redis.call('ZADD', index, tonumber(ARGV[3]), ARGV[2])
+
+-- The user index score is used purely for oldest-first eviction ordering
+-- (never as the record's createdAt, which is app-stamped seconds inside the
+-- envelope). Redis breaks equal ZSET scores by lexicographic member order,
+-- not insertion order, so scoring by second-granularity createdAt would
+-- make eviction pick an arbitrary (jti-lexicographic) session rather than
+-- the actual oldest one whenever a user creates more than one session in
+-- the same wall-clock second - a realistic case under normal traffic, not
+-- just a burst edge case. Redis is single-threaded, so two scripts touching
+-- the same user slot never observe the same TIME() reading in practice;
+-- microsecond-resolution server time therefore gives a strictly monotonic,
+-- clock-skew-free ordering key for this user's index.
+local t = redis.call('TIME')
+local orderScore = tonumber(t[1]) + (tonumber(t[2]) / 1000000)
+redis.call('ZADD', index, orderScore, ARGV[2])
 
 local evicted = {}
 local limit = tonumber(ARGV[5])
