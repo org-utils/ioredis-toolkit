@@ -495,6 +495,7 @@ export class RedisClientWrapper {
           options.revocationStore ?? this.revocationStore,
       }
       this._session = createSessionManager(params);
+      void this._session.init()
       this.config.sessionOptions = params
 
     }
