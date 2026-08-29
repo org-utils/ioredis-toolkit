@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.8
+
+### Patch Changes
+
+- aade577: authomatically init
+
 ## 0.0.7
 
 ### Patch Changes
