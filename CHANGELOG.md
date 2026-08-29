@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.6
+
+### Patch Changes
+
+- 399a68e: UPdated jsdocs
+
 ## 0.0.5
 
 ### Patch Changes
