@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.7
+
+### Patch Changes
+
+- 669f7a7: Refactored the code
+
 ## 0.0.6
 
 ### Patch Changes
