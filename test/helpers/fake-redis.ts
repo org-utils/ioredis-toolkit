@@ -458,6 +458,17 @@ export class FakeRedis {
     });
   }
 
+  /**
+   * Monotonic counter standing in for the microsecond component of a real
+   * Redis TIME reply inside Lua scripts (see the `timeShim` in {@link
+   * runEval}). Real Redis returns genuine, strictly-increasing microseconds
+   * for successive TIME calls; this keeps that same strictly-increasing
+   * property under the mock instead of collapsing every call to 0, which
+   * would silently defeat any script logic that orders entries by TIME
+   * (e.g. the session user-index eviction score).
+   */
+  private mockMicros = 0;
+
   private readonly loadedScripts = new Map<string, string>();
 
   scriptLoad(script: string): Promise<string> {
@@ -506,12 +517,19 @@ export class FakeRedis {
     // ioredis-mock rounds TIME to the nearest second, which puts its clock
     // up to 500ms ahead of the app's `Date.now()`; scripts read TIME through
     // redis.call, so shim it back to the floored wall-clock second.
+    // Real Redis returns strictly-increasing microseconds across successive
+    // TIME calls (single-threaded execution + a real clock). A fixed '0'
+    // here would silently defeat any script logic that relies on that
+    // (e.g. ordering the session user-index by TIME for oldest-first
+    // eviction), so each call gets a fresh, incrementing micros value.
+    this.mockMicros += 1;
+    const micros = this.mockMicros;
     const timeShim = `
 do
   local __origCall = redis.call
   redis.call = function(cmd, ...)
     if type(cmd) == 'string' and cmd:upper() == 'TIME' then
-      return { tostring(os.time()), '0' }
+      return { tostring(os.time()), '${micros}' }
     end
     return __origCall(cmd, ...)
   end

@@ -37,7 +37,8 @@ if env.v ~= 2 then
   return 6
 end
 
-local now = tonumber(redis.call('TIME')[1])
+local t = redis.call('TIME')
+local now = tonumber(t[1])
 
 -- Retry-safe replay detection BEFORE rejecting consumed records.
 -- The rotation nonce uniquely identifies the rotation: when the consumed
@@ -102,6 +103,8 @@ end
 
 redis.call('SET', KEYS[2], cjson.encode(nextEnv), 'EX', nextTtl)
 redis.call('ZREM', KEYS[3], ARGV[7])
-redis.call('ZADD', KEYS[3], now, ARGV[3])
+-- Microsecond-resolution ordering score - see create.lua for why
+-- second-granularity scores break oldest-first eviction ordering.
+redis.call('ZADD', KEYS[3], tonumber(t[1]) + (tonumber(t[2]) / 1000000), ARGV[3])
 
 return { 1, ARGV[3] }
