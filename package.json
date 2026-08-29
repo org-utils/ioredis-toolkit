@@ -1,6 +1,6 @@
 {
   "name": "ioredis-toolkit",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Production-grade, type-safe Redis infrastructure for standalone, Sentinel, and Cluster deployments",
   "type": "module",
   "main": "./dist/index.js",
