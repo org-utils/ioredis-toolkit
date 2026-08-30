@@ -60,7 +60,7 @@ export class Cache {
     // this.config = config;
     this.defaultTTL = config.defaultTTL || 3600;
     this.compressionThreshold = config.compressionThreshold || 1024;
-    this.namespace = config.namespace || "cache";
+    this.namespace = config.namespace?.trim() || "cache";
   }
 
   private async serialize<T>(value: T): Promise<{ data: Buffer; compressed: boolean }> {
@@ -116,8 +116,10 @@ export class Cache {
   }
 
   private getKey(key: string, namespace?: string): string {
-    const effectiveNamespace = namespace ?? this.namespace;
-    return effectiveNamespace ? `${effectiveNamespace}:${key}` : key;
+    if (namespace?.trim()) {
+      return `${this.namespace}:${namespace.trim()}:${key}`;
+    }
+    return `${this.namespace}:${key}`;
   }
 
   /**
@@ -1047,8 +1049,12 @@ export class Cache {
    * @returns The number of deleted keys.
    */
   async deletePattern(pattern: string, namespace?: string): Promise<number> {
-    const effectiveNamespace = namespace ?? this.namespace;
-    const fullPattern = effectiveNamespace ? `${effectiveNamespace}:${pattern}` : pattern;
+    let fullPattern: string;
+    if (namespace?.trim()) {
+      fullPattern = `${this.namespace}:${namespace.trim()}:${pattern}`;
+    } else {
+      fullPattern = `${this.namespace}:${pattern}`;
+    }
     let deleted = 0;
 
     for await (const key of this.client.scanIterator(fullPattern)) {
@@ -1100,8 +1106,12 @@ export class Cache {
    * @returns Matching keys.
    */
   async keys(pattern: string, namespace?: string): Promise<string[]> {
-    const effectiveNamespace = namespace ?? this.namespace;
-    const fullPattern = effectiveNamespace ? `${effectiveNamespace}:${pattern}` : pattern;
+    let fullPattern;
+    if (namespace?.trim()) {
+      fullPattern = `${this.namespace}:${namespace.trim()}:${pattern}`;
+    } else {
+      fullPattern = `${this.namespace}:${pattern}`;
+    }
     const keys: string[] = [];
 
     for await (const key of this.client.scanIterator(fullPattern)) {
@@ -1146,7 +1156,6 @@ export class Cache {
    * @returns The number of deleted keys.
    */
   async clearNamespace(namespace: string): Promise<number> {
-    const effectiveNamespace = namespace ?? this.namespace;
-    return this.deletePattern('*', effectiveNamespace);
+    return this.deletePattern('*', namespace);
   }
 }

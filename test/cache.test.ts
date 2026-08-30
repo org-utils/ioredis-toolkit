@@ -8,9 +8,12 @@ const config = {
   mode: 'standalone',
   host: 'localhost',
   port: 6379,
+  cache: {
   defaultTTL: 3600,
   compressionThreshold: 1024,
-} as unknown as RedisConfig;
+    namespace: 'cache',
+  },
+};
 
 describe('Cache', () => {
   let cache: Cache;
@@ -18,7 +21,7 @@ describe('Cache', () => {
 
   beforeEach(() => {
     fake = fakeClient();
-    cache = new Cache(asWrapper(fake), config, silentLogger);
+    cache = new Cache(asWrapper(fake), config.cache, silentLogger);
   });
 
   it('stores and retrieves strings', async () => {
@@ -52,14 +55,14 @@ describe('Cache', () => {
   });
 
   it('compresses values above the threshold and restores them', async () => {
-    const smallConfig = { ...config, compressionThreshold: 10 } as unknown as RedisConfig;
-    const smallCache = new Cache(asWrapper(fake), smallConfig, silentLogger);
+    const smallConfig = { ...config,  cache: { ...config.cache, compressionThreshold: 5  } } ;
+    const smallCache = new Cache(asWrapper(fake), smallConfig.cache, silentLogger);
 
     const longValue = { payload: 'x'.repeat(5000) };
     expect(await smallCache.set('big', longValue)).toBe(true);
     expect(await smallCache.get('big')).toEqual(longValue);
 
-    const raw = await fake.get('big');
+    const raw = await fake.get('cache:big');
     expect(raw).toContain('_compressed');
   });
 
