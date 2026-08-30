@@ -29,6 +29,7 @@ export class Cache {
   // private config: RedisConfig;
   private defaultTTL: number;
   private compressionThreshold: number;
+  private namespace: string;
 
   /**
    * Creates a cache bound to a Redis client.
@@ -41,6 +42,7 @@ export class Cache {
    *     applied when no per-call TTL is specified.
    *   - `compressionThreshold` (number, optional, default: `1024`) - Byte threshold
    *     above which values are gzip-compressed transparently.
+   *   - `namespace` (string, optional, default: `cache`) - Namespace prefix for all keys.
    * - `logger` - Optional pino-compatible logger. Supports `trace/debug/info/warn/error/fatal`
    *   levels and `child()` for namespace logging. Defaults to `console`.
    *
@@ -49,7 +51,7 @@ export class Cache {
    *
    * **Example:**
    * ```ts
-   * const cache = new Cache(client, { defaultTTL: 600, compressionThreshold: 2048 });
+   * const cache = new Cache(client, { defaultTTL: 600, compressionThreshold: 2048, namespace: "myapp" });
    * ```
    */
   constructor(client: RedisClientWrapper, config: CacheInputConfig, logger: LoggerLike = defaultLogger) {
@@ -58,6 +60,7 @@ export class Cache {
     // this.config = config;
     this.defaultTTL = config.defaultTTL || 3600;
     this.compressionThreshold = config.compressionThreshold || 1024;
+    this.namespace = config.namespace || "cache";
   }
 
   private async serialize<T>(value: T): Promise<{ data: Buffer; compressed: boolean }> {
@@ -113,7 +116,8 @@ export class Cache {
   }
 
   private getKey(key: string, namespace?: string): string {
-    return namespace ? `${namespace}:${key}` : key;
+    const effectiveNamespace = namespace ?? this.namespace;
+    return effectiveNamespace ? `${effectiveNamespace}:${key}` : key;
   }
 
   /**
@@ -1043,7 +1047,8 @@ export class Cache {
    * @returns The number of deleted keys.
    */
   async deletePattern(pattern: string, namespace?: string): Promise<number> {
-    const fullPattern = namespace ? `${namespace}:${pattern}` : pattern;
+    const effectiveNamespace = namespace ?? this.namespace;
+    const fullPattern = effectiveNamespace ? `${effectiveNamespace}:${pattern}` : pattern;
     let deleted = 0;
 
     for await (const key of this.client.scanIterator(fullPattern)) {
@@ -1095,7 +1100,8 @@ export class Cache {
    * @returns Matching keys.
    */
   async keys(pattern: string, namespace?: string): Promise<string[]> {
-    const fullPattern = namespace ? `${namespace}:${pattern}` : pattern;
+    const effectiveNamespace = namespace ?? this.namespace;
+    const fullPattern = effectiveNamespace ? `${effectiveNamespace}:${pattern}` : pattern;
     const keys: string[] = [];
 
     for await (const key of this.client.scanIterator(fullPattern)) {
@@ -1140,6 +1146,7 @@ export class Cache {
    * @returns The number of deleted keys.
    */
   async clearNamespace(namespace: string): Promise<number> {
-    return this.deletePattern('*', namespace);
+    const effectiveNamespace = namespace ?? this.namespace;
+    return this.deletePattern('*', effectiveNamespace);
   }
 }
