@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.9
+
+### Patch Changes
+
+- e4044c8: Updated cache and types
+
 ## 0.0.8
 
 ### Patch Changes
