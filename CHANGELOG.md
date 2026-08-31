@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.10
+
+### Patch Changes
+
+- ae670f6: feat(session): token-family reuse detection with atomic lineage revocation
+
 ## 0.0.5
 
 ### Patch Changes
