@@ -8,14 +8,15 @@ import {
   serializeEncryptedSession,
   serializeSession,
   validateSessionRecord,
-} from '../../src/session/session-serializer.js';
-import { StaticSessionKeyProvider } from '../../src/session/session-encryption.js';
-import { SessionSerializationError } from '../../src/session/session-errors.js';
-import { SessionTokenManager } from '../../src/session/session-token.js';
-import { SessionKeyStrategy, encodeUserId } from '../../src/session/session-keys.js';
-import { SessionCookieManager } from '../../src/session/session-cookie.js';
-import { SessionMetrics } from '../../src/session/session-metrics.js';
-import type { SessionRecord } from '../../src/session/session-types.js';
+} from './../../src/session/session-serializer.js';
+
+import { SessionSerializationError } from './../../src/session/session-errors.js';
+import { SessionTokenManager } from './../../src/session/session-token.js';
+import { SessionKeyStrategy, encodeUserId } from './../../src/session/session-keys.js';
+import { SessionCookieManager } from './../../src/session/session-cookie.js';
+import { SessionMetrics } from './../../src/session/session-metrics.js';
+import type { SessionRecord } from './../../src/session/session-types.js';
+import { StaticSessionKeyProvider } from './../../src/session/session-encryption.js';
 
 function makeRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {
@@ -36,6 +37,7 @@ function makeRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
     rotatedTo: null,
     consumedAt: null,
     rotationNonceHash: null,
+    familyId: 'a'.repeat(43),
     ...overrides,
   };
 }
@@ -292,6 +294,7 @@ describe('encryptedHeaderOf', () => {
       exp: record.absoluteExpiresAt,
       rn: null,
       rj: 'b'.repeat(43),
+      fam: record.familyId,
     });
   });
 });

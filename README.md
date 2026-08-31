@@ -1092,10 +1092,565 @@ The package exports comprehensive types for all modules. Key type exports:
 | `calculateRedisClusterSlot` | CRC16 slot calculation for cluster keys |
 | `hashTag` | Extract hash tag from key (`{tag}:key`) |
 
+<a name="api-reference"></a>
+## Complete API Reference
+
+This section provides JSDoc-style documentation for every public method, class, and type. Use it as a quick lookup for signatures, parameters, return values, and behaviors.
+
+### `RedisClientWrapper`
+
+#### Constructor
+
+```ts
+new RedisClientWrapper(config: RedisConfigInput, logger?: LoggerLike)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `config` | `RedisConfigInput` | Redis configuration (validated with Zod `RedisConfigSchema`). Must include `mode` (standalone/sentinel/cluster), and topology-specific fields. |
+| `logger` | `LoggerLike` | Optional pino-compatible logger; defaults to `console`. |
+
+Throws `ConfigurationError` when the config fails Zod validation.
+
+#### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `mode` | `RedisMode` | The Redis topology mode (`'standalone'`, `'sentinel'`, or `'cluster'`). |
+| `cache` | `Cache` | Shared Cache instance (lazily created on first access). |
+| `pubsub` | `PubSub` | Shared Pub/Sub instance (lazily created on first access). |
+| `lock` | `DistributedLock` | Shared DistributedLock instance (lazily created on first access). |
+| `rateLimiter` | `RateLimiter` | Shared RateLimiter instance (lazily created on first access). |
+| `session` | `SessionManager` | Shared SessionManager instance (lazily created on first access). |
+| `revocationStore` | `RedisRevocationStore` | Shared revocation store (lazily created on first access). |
+| `raw` | `RedisClient \| Cluster` | The raw underlying ioredis client. |
+
+#### Builder-style configurators
+
+These methods let you swap configuration after construction. The corresponding sub-component is reset so it picks up the new configuration on next access.
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `withCache(value)` | Set cache configuration and reset the cache. | `value: CacheInputConfig` | `this` for chaining |
+| `withLock(value)` | Set lock options and reset the lock. | `value: DistributedLockInputOptions` | `this` for chaining |
+| `withRateLimiter(value)` | Set rate limit options and reset the limiter. | `value: RateLimitOptionsInput` | `this` for chaining |
+| `withSession(value)` | Merge session configuration and reset the session manager. | `value: WithSessionManagerOptions` | `this` for chaining |
+
+#### Raw client access
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `getRawClient<T>()` | Typed access to the raw ioredis client/cluster. | generic `T` defaults to `RedisClient \| Cluster` | `T` |
+| `get raw` | The raw underlying client (`RedisClient` or `Cluster`). | — | `RedisClient \| Cluster` |
+
+#### Lifecycle
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `ping()` | Verify Redis connectivity with PING. | — | `Promise<boolean>` — `true` when the server replied `PONG`, `false` on any error. |
+| `close()` | Gracefully `QUIT` the underlying client and mark the wrapper as not ready. | — | `Promise<void>` |
+| `getConnectionStatus()` | Snapshot of the connection state. | — | `ConnectionStatus` |
+| `defineCommand(...args)` | Forward to `ioredis#defineCommand` to register a custom command on the underlying client. | mirrors `ioredis` | mirrors `ioredis` |
+
+#### Basic commands (string, key, counter)
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `get(key)` | `GET` a key. | `key: string` | `Promise<string \| null>` |
+| `set(key, value, ttl?)` | `SET` with optional `EX` TTL. | `key: string`, `value: string \| Buffer`, `ttl?: number` (seconds) | `Promise<"OK" \| null>` |
+| `setexnx(key, value, ttl?)` | `SET ... EX NX` (optional TTL). | as above | `Promise<"OK" \| null>` |
+| `setnx(key, value, ttl?)` | `SETNX` with optional `EX` — returns `1` on success, `0` on conflict. | as above | `Promise<number>` (1 or 0) |
+| `getdel(key)` | `GETDEL` — return and remove. | `key: string` | `Promise<string \| null>` |
+| `exists(key)` | `EXISTS` — count of existing keys (0 or 1 here). | `key: string` | `Promise<number>` |
+| `del(...keys)` | `DEL` one or more keys. | `...keys: string[]` | `Promise<number>` — number deleted |
+| `expire(key, ttl)` | `EXPIRE` — set a TTL in seconds. | `key: string`, `ttl: number` | `Promise<number>` — 1 if applied, 0 if not |
+| `ttl(key)` | `TTL` — remaining seconds (`-2` missing, `-1` no TTL). | `key: string` | `Promise<number>` |
+| `incr(key)` | `INCR` — counter by 1. | `key: string` | `Promise<number>` |
+| `decr(key)` | `DECR` — counter by 1. | `key: string` | `Promise<number>` |
+| `incrby(key, amount)` | `INCRBY` — counter by `amount` (must be a positive safe integer; throws `RedisError 'INVALID_AMOUNT'` otherwise). | `key: string`, `amount: number` | `Promise<number>` |
+| `decrby(key, amount)` | `DECRBY` — counter by `amount` (same validation as `incrby`). | `key: string`, `amount: number` | `Promise<number>` |
+| `time()` | `TIME` — Redis server time (seconds portion). | — | `Promise<number>` — Unix seconds |
+
+#### Multi-key commands (cluster-safe)
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `mget(...keys)` | `MGET`; routes by hash slot in cluster mode. | `...keys: string[]` | `Promise<(string \| null)[]>` |
+| `mset(...pairs)` | `MSET`; grouped by hash slot in cluster mode with bounded fan-out (`maxFanOutConcurrency`). | `...pairs: Array<[string, string \| Buffer]>` | `Promise<"OK">` |
+| `mgetClusterAware(keys)` | Same as `mget`, but the cluster grouping is always applied (useful when the cluster branch is selected by mode narrowing). | `keys: string[]` | `Promise<(string \| null)[]>` |
+
+#### Hash commands
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `hget(key, field)` | `HGET`. | `key: string`, `field: string` | `Promise<string \| null>` |
+| `hset(key, field, value)` | `HSET`. | `key: string`, `field: string`, `value: string \| Buffer` | `Promise<number>` — 1 if new, 0 if updated |
+| `hgetall(key)` | `HGETALL`. | `key: string` | `Promise<Record<string, string>>` |
+| `hdel(key, ...fields)` | `HDEL`. | `key: string`, `...fields: string[]` | `Promise<number>` — number deleted |
+
+#### Set commands
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `sadd(key, ...members)` | `SADD`. | `key: string`, `...members: string[]` | `Promise<number>` — added count |
+| `srem(key, ...members)` | `SREM`. | `key: string`, `...members: string[]` | `Promise<number>` — removed count |
+| `smembers(key)` | `SMEMBERS`. | `key: string` | `Promise<string[]>` |
+| `sismember(key, member)` | `SISMEMBER`. | `key: string`, `member: string` | `Promise<number>` — 0 or 1 |
+
+#### Sorted set commands
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `zadd(key, score, member)` | `ZADD`. | `key: string`, `score: number`, `member: string` | `Promise<number>` — added count |
+| `zrange(key, start, stop)` | `ZRANGE` (legacy form, ascending). | `key: string`, `start: number`, `stop: number` | `Promise<string[]>` |
+| `zcard(key)` | `ZCARD`. | `key: string` | `Promise<number>` |
+| `zrem(key, ...members)` | `ZREM`. | `key: string`, `...members: string[]` | `Promise<number>` — removed count |
+
+#### Pipelines and scanning
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `pipeline()` | Returns a new ioredis pipeline (keys in a pipeline must share one hash slot in cluster mode). | — | `Pipeline` |
+| `scanIterator(pattern, count?)` | Cluster-safe async iterator over keys matching `pattern`. | `pattern: string`, `count?: number` (default 100) | `AsyncIterable<string>` |
+| `scanCluster(pattern, options?)` | Cluster-safe async iterator yielding batches of matching keys. | `pattern: string`, `options?: { count?, batchSize? }` | `AsyncIterable<string[]>` |
+| `deletePattern(pattern, options?)` | SCAN every node, then `DEL` matches in slot-grouped pipelines. | `pattern: string`, `options?: { batchSize?, scanCount? }` | `Promise<number>` — number deleted |
+| `clearNamespace(prefix, options?)` | Alias of `deletePattern(${prefix}*)`. | `prefix: string`, `options?: DeletePatternOptions` | `Promise<number>` |
+| `clearNamespaceClusterAware(prefix, options?)` | Cluster-aware clear (internally calls `clearNamespace`). | as above | `Promise<number>` |
+
+#### Lua scripts
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `eval(script, numKeys, ...args)` | `EVAL` — first `numKeys` are `KEYS`, the rest are `ARGV`. | `script: string`, `numKeys: number`, `...args: RedisCommandArgument[]` | `Promise<unknown>` |
+| `evalsha(sha, script, numKeys, ...args)` | `EVALSHA` with automatic `EVAL` fallback on `NOSCRIPT`. | `sha: string`, `script: string`, `numKeys: number`, `...args: RedisCommandArgument[]` | `Promise<unknown>` |
+| `scriptLoad(script)` | `SCRIPT LOAD`. | `script: string` | `Promise<string>` — the SHA1 |
+
+#### Cluster helpers (cluster mode only)
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `isCluster()` | Is the underlying client a Cluster? | — | `boolean` |
+| `getClusterNodes()` | Raw master node clients. | — | `RedisClient[]` (empty for non-cluster) |
+| `getClusterSlots()` | `CLUSTER SLOTS` parsed into structured slot ranges. | — | `Promise<ClusterSlotRange[]>` |
+| `getSlotRanges()` | `Map<slot, host:port[]>` for every slot. | — | `Promise<Map<number, string[]>>` |
+| `calculateSlot(key)` | CRC16 hash slot for a key (honors `{hash tags}`). | `key: string` | `number` (0..16383) |
+| `getNodeForKey(key)` | The Redis client owning the key's slot, or `null`. | `key: string` | `Promise<RedisClient \| null>` |
+| `isKeyServed(key)` | Whether the cluster currently serves the key's slot. | `key: string` | `Promise<boolean>` — `true` outside cluster mode |
+| `executeOnNode(key, command, ...args)` | Run an arbitrary command on the node owning `key` (or the single client outside cluster mode). | `key: string`, `command: string`, `...args: unknown[]` | `Promise<T>` |
+| `mgetClusterAware(keys)` | Slot-grouped multi-get (always applies the grouping). | `keys: string[]` | `Promise<(string \| null)[]>` |
+| `clearNamespaceClusterAware(prefix, options?)` | Cluster-aware namespace wipe. | `prefix: string`, `options?: DeletePatternOptions` | `Promise<number>` |
+| `getClusterInfo()` | Snapshot of the topology and node list. | — | `ClusterInfo` |
+
+#### Server info and database selection
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `info(section?)` | `INFO` (full or per-section). | `section?: string` | `Promise<string>` |
+| `select(database)` | `SELECT`. Throws `RedisError 'CLUSTER_MODE'` in cluster mode; throws `RedisError 'INVALID_DATABASE'` when `database` is not an integer in `[0, 15]`. | `database: number` | `Promise<"OK">` |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `exec<T>(command, args, operation)` | Wraps a Redis call with timing/logging. Logs slow commands above `slowCommandThreshold`. |
+| `isClusterClient(client)` | Type guard for `Cluster`. |
+| `runWithConcurrency(items, concurrency, worker)` | Bounded-fan-out helper. |
+| `executeCommandOnClient<T>(client, command, args)` | Reflectively invoke a method on a client. |
+
+### `Cache`
+
+#### Constructor
+
+```ts
+new Cache(client: RedisClientWrapper, config: CacheInputConfig, logger?: LoggerLike)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `client` | `RedisClientWrapper` | The underlying client. |
+| `config` | `CacheInputConfig` | `{ defaultTTL?, compressionThreshold?, namespace? }`. |
+| `logger` | `LoggerLike` | Optional pino-compatible logger; defaults to `console`. |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `serialize<T>(value)` | Buffer-ify, then gzip if larger than `compressionThreshold`. Returns `{ data, compressed }`. |
+| `deserialize<T>(data, compressed)` | Inverse of `serialize` — gunzip if needed, JSON-parse when possible. |
+| `getKey(key, namespace?)` | Build the final Redis key with the configured/per-call namespace prefix. |
+| `get getNamespace` | Get the configured namespace prefix with trailing `:`. |
+
+#### Methods
+
+See the [Cache](#cache-1) section above for the full method table.
+
+### `PubSub`
+
+#### Constructor
+
+```ts
+new PubSub(publisher: RedisClientWrapper, logger?: LoggerLike)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `publisher` | `RedisClientWrapper` | A client used for publishing. |
+| `logger` | `LoggerLike` | Optional pino-compatible logger; defaults to `console`. |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `setupSubscriber()` | Wires `message`/`pmessage`/`error` listeners on the subscriber client. |
+| `handleMessage(channel, message)` | Dispatches a standard message to registered handlers (with JSON parse + per-handler try/catch). |
+| `handlePatternMessage(pattern, channel, message)` | Same as `handleMessage` for pattern subscriptions. |
+
+#### Methods
+
+See the [Pub/Sub](#pubsub-1) section above for the full method table.
+
+### `DistributedLock`
+
+#### Constructor
+
+```ts
+new DistributedLock(client: RedisClientWrapper, logger?: LoggerLike, options?: Partial<DistributedLockOptions>)
+```
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `client` | `RedisClientWrapper` | — | The underlying client. |
+| `logger` | `LoggerLike` | `defaultLogger` | Optional pino-compatible logger. |
+| `options.ttl` | `number` | `30000` | Lock TTL in milliseconds. |
+| `options.retryCount` | `number` | `3` | Acquisition attempts. |
+| `options.retryDelay` | `number` | `200` | Base delay (exponential, with jitter) between attempts. |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `getLockKey(key)` | Build the Redis key (`lock:{key}`). |
+| `generateLockId()` | 16 random bytes as hex. |
+| `executeWithRetry(fn, retryCount, retryDelay)` | Exponential backoff with 0.5–1.0 jitter. |
+
+#### Methods
+
+See the [DistributedLock](#distributedlock) section above for the full method table.
+
+### `RateLimiter`
+
+#### Constructor
+
+```ts
+new RateLimiter(client: RedisClientWrapper, options?: RateLimitOptionsInput, logger?: LoggerLike)
+```
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `client` | `RedisClientWrapper` | — | The underlying client. |
+| `options.limit` | `number` | `100` | Max requests per window. |
+| `options.duration` | `number` | `60` | Window length in seconds. |
+| `options.algorithm` | `'fixed' \| 'sliding'` | `'sliding'` | Window algorithm. |
+| `options.namespace` | `string` | `'ratelimit'` | Key prefix. |
+| `logger` | `LoggerLike` | `defaultLogger` | Optional pino-compatible logger. |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `consumeFixed(key, limit, duration)` | Fixed-window: `INCR` + `EXPIRE` on first hit. |
+| `consumeSliding(key, limit, duration)` | Sliding-window via atomic Lua over a sorted set. |
+| `checkFixed(key, limit, duration)` | Fixed-window peek. |
+| `checkSliding(key, limit, duration)` | Sliding-window peek. |
+
+#### Methods
+
+See the [RateLimiter](#ratelimiter-1) section above for the full method table.
+
+### `HealthChecker`
+
+#### Constructor
+
+```ts
+new HealthChecker(client: RedisClientWrapper, logger?: LoggerLike)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `client` | `RedisClientWrapper` | The underlying client. |
+| `logger` | `LoggerLike` | Optional pino-compatible logger; defaults to `console`. |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `notifyCallbacks(status)` | Fire every registered callback with try/catch isolation. |
+
+#### Methods
+
+See the [HealthChecker](#healthchecker) section above for the full method table.
+
+### `RedisRevocationStore`
+
+#### Constructor
+
+```ts
+new RedisRevocationStore(options: RedisRevocationStoreOptions)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `options.client` | `RedisClientWrapper` | The underlying client. |
+| `options.keyPrefix` | `string` | Key prefix (default `'cache:revoked:'`). |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `key(jti)` | Build the full Redis key (`{prefix}{jti}`). |
+
+#### Methods
+
+See the [RedisRevocationStore](#redisrevocationstore) section above for the full method table.
+
+### Slot / cluster-slot helpers (`src/cluster-slot.ts`)
+
+| Export | Signature | Description |
+|---|---|---|
+| `hashTag(key)` | `(key: string) => string` | Extract the `{...}` hash tag from a key, or return the key when no tag is present. |
+| `calculateRedisClusterSlot(key)` | `(key: string) => number` | CRC16-CCITT/XMODEM over the hash-tagged key bytes, `crc % 16384`. Honors `{hash tags}`. |
+
+### Cluster fan-out helpers (`src/cluster.ts`)
+
+| Export | Signature | Description |
+|---|---|---|
+| `PipelineCommand` | interface `{ command, args, slot }` | A single queued pipeline command with its slot precomputed. |
+| `PipelineCommandResult` | type `[Error \| null, unknown]` | A pipeline result. |
+| `ExecuteBySlotOptions` | interface `{ concurrency?, retry? }` | Tuning for `executeBySlot`. |
+| `executeBySlot(client, commands, options?)` | `(client, commands: PipelineCommand[], options?) => Promise<PipelineCommandResult[]>` | Group commands by slot, run one pipeline per slot with bounded concurrency, retry network-level slot-pipeline failures. Result order matches the input order. |
+| `assertPipelineOk(results, describe?)` | `(results, describe?) => unknown[]` | Throws a structured `Error` listing failed command indexes when any pipeline command returned an error; returns the values otherwise. |
+| `mapWithConcurrency(items, limit, fn)` | `<T,R>(items, limit, fn) => Promise<R[]>` | Bounded-concurrency async map. |
+| `chunk(items, size)` | `<T>(items, size) => Generator<T[]>` | Bounded batch chunker. |
+
+### Logger types (`src/logger.ts`)
+
+| Export | Description |
+|---|---|
+| `LogMeta` | `Record<string, unknown>` — structured log metadata. |
+| `LoggerLike` | Interface matching pino's `trace/debug/info/warn/error/fatal` + `child()`. |
+| `defaultLogger` | A `ConsoleLogger` using `console.*` methods. |
+| `createConsoleLogger(bindings?)` | Factory for a `ConsoleLogger` with pre-bound metadata. |
+
+### Error types (`src/errors.ts`)
+
+| Class | Code | When |
+|---|---|---|
+| `RedisError` | configurable | Base error for the toolkit. |
+| `ConnectionError` | `CONNECTION_ERROR` | Underlying connection issues. |
+| `TimeoutError` | `TIMEOUT_ERROR` | Operation timeout. |
+| `SessionExpiredError` | `AUTH_SESSION_EXPIRED` | Session referenced by a token no longer exists or has expired. |
+| `LockError` | `LOCK_ERROR` | Distributed lock error. |
+| `SerializationError` | `SERIALIZATION_ERROR` | Cache / payload serialization error. |
+| `CompressionError` | `COMPRESSION_ERROR` | Cache compression error. |
+| `ConfigurationError` | `CONFIGURATION_ERROR` | Invalid config (e.g. Zod failure). |
+| `ClusterError` | `CLUSTER_ERROR` | Cluster topology error. |
+
+### Session types (`src/session/`)
+
+See [`src/session/README.md`](src/session/README.md) for the complete session reference. Highlights:
+
+| Export | Description |
+|---|---|
+| `createSessionManager` | Build a `SessionManager` (synchronous). |
+| `SessionManager` | Composition root; exposes `service`, `repository`, `metrics`, `health`, `circuitBreaker`, `cookies`, `token`, `keys`, `init()`, `close()`. |
+| `SessionService` | Application-facing API: `create`, `validate`, `touch`, `rotate`, `update`, `destroy`, `revoke`, `revokeAll`, `deleteByUser`, `findByUser`, `list`, `setSecurityVersion`, `getSecurityVersion`, `reconcileUser`, `health`. |
+| `SessionRepository` | Low-level Redis I/O. |
+| `SessionTokenManager` | Token + jti management (`generate`, `generateNonce`, `hash`, `validateFormat`, `safeEquals`, `tokenToJti`). |
+| `SessionKeyStrategy` | Cluster-safe key layout (`sessionKey`, `userIndexKey`, `securityVersionKey`, `createClaimKey`, `jtiIndexKey`, `revokedKey`, `sessionKeyPrefix`, `familyHeadKeyPrefix`, `namespacePrefix`). |
+| `SessionMetrics` | Internal metrics facade (`operation`, `latency`, `breakerState`, `revocationMiss`, `encryptionError`, `jtiIndexWriteFailure`, `reconcileUser`). |
+| `SessionMetricsAdapter` | Application-provided metrics sink. |
+| `SessionCircuitBreaker` | Fail-closed breaker (`state`, `run`, `tryAcquire`, `recordSuccess`, `recordFailure`, `reset`). |
+| `SessionHealthChecker` | PING + sliding-window error rate (`recordOp`, `check`). |
+| `SessionCookieManager` | `name`, `serialize`, `serializeWithAttributes`, `clear`, `parse`. |
+| `SessionKeyProvider` | `getCurrentKey` / `getKey` for encryption. |
+| `StaticSessionKeyProvider` | In-memory map of versions to 32-byte keys. |
+| `createRandomSessionKeyProvider` | Convenience: a single random 32-byte key. |
+| `serializeSession` / `serializeEncryptedSession` / `deserializeSession` / `validateSessionRecord` | (De)serialization helpers. |
+| `parseSessionConfig` / `redactSessionConfig` | Config helpers. |
+| `TTL` / `IDLE_TIMEOUT` / `TOUCH_INTERVAL` | Default values (7d, 24h, 5m). |
+| Session error classes | `SessionError`, `SessionNotFoundError`, `SessionExpiredError`, `SessionRevokedError`, `SessionInvalidError`, `SessionRotationError`, `SessionReplayError`, `SessionStorageError`, `SessionSerializationError`, `SessionConfigurationError`, `SessionConcurrencyError`, `RevocationError`, `RevocationBatchError`, `CircuitBreakerOpenError`. |
+| `redactIdentifier(value)` | Safe-to-log identifier redaction. |
+
+### Public types catalog
+
+#### Core client types
+
+| Type | Description |
+|---|---|
+| `RedisClientWrapper` | The unified client wrapper. |
+| `RedisClient` (alias `RedisClientForMode`) | The unified client, narrowed per topology. |
+| `createRedisClient` | Factory function: `createRedisClient(config)` — creates a client for the specified mode. |
+| `ClusterCapabilities` | Cluster-only methods available on cluster clients. |
+| `RedisConfig` | Normalized configuration (after Zod validation). |
+| `RedisConfigInput` | User-facing configuration input (validated with Zod). |
+| `RedisMode` | `'standalone' \| 'sentinel' \| 'cluster'`. |
+| `RedisConfigForMode<M>` | Mode-specific config type. |
+| `RedisCommonConfig` | Common config shared by all topologies. |
+| `RedisCommonConfigInput` | User-input shape for common config. |
+| `StandaloneRedisConfig` / `StandaloneRedisConfigInput` | Standalone-specific config. |
+| `SentinelRedisConfig` / `SentinelRedisConfigInput` | Sentinel-specific config. |
+| `ClusterRedisConfig` / `ClusterRedisConfigInput` | Cluster-specific config. |
+| `RedisConfigInputSchema` | Zod union schema for input config. |
+| `BaseRedisConfigSchema` | Base Zod schema (password, username, database, tls, etc.). |
+| `RedisTlsOptions` / `RedisTlsOptionsInput` | TLS settings (CA / cert / key / `rejectUnauthorized`). |
+| `RedisNode` / `RedisNodeSchema` | `{ host, port, nodeId? }` for cluster/sentinel nodes. |
+| `Redis` | Alias for the raw `ioredis` `Redis` type. |
+
+#### Cache types
+
+| Type | Description |
+|---|---|
+| `Cache` | Cache class. |
+| `CacheOptions` | `{ ttl?, compress?, namespace? }` per-call options. |
+| `CacheInputConfig` | `{ defaultTTL?, compressionThreshold?, namespace? }` constructor config. |
+| `CacheStats` | `{ namespace, connectionStatus }`. |
+| `CacheOptionsSchema` | Zod schema for cache options. |
+
+#### Lock types
+
+| Type | Description |
+|---|---|
+| `DistributedLock` | Lock class. |
+| `DistributedLockOptions` | `{ ttl?, retryCount?, retryDelay? }`. |
+| `DistributedLockOptionsSchema` | Zod schema for lock options. |
+| `DistributedLockInputOptions` | Pre-default Zod input type. |
+| `LockInfo` | `{ locked, ttl?, lockId? }`. |
+
+#### Rate limit types
+
+| Type | Description |
+|---|---|
+| `RateLimiter` | Limiter class. |
+| `RateLimitAlgorithm` | `'fixed' \| 'sliding'`. |
+| `RateLimitOptions` | `{ limit?, duration?, algorithm?, namespace? }` for instance/call. |
+| `RateLimitOptionsInput` | Pre-default Zod input type. |
+| `RateLimitOptionsSchema` | Zod schema for rate-limit options. |
+| `RateLimitResult` | `{ allowed, limit, used, remaining, resetAt, retryAfter }`. |
+| `RateLimitAlgorithmSchema` | Zod schema for the algorithm literal. |
+
+#### Pub/Sub types
+
+| Type | Description |
+|---|---|
+| `PubSub` | Pub/Sub class. |
+| `PubSubMessage<T>` | `{ channel, message }`. |
+| `PubSubStats` | `{ subscriptions, patternSubscriptions, connected }`. |
+| `PubSubEventMap` | Event payload map for `EventEmitter` typing. |
+
+#### Health types
+
+| Type | Description |
+|---|---|
+| `HealthStatus` | `{ healthy, status, latency, timestamp, details }`. |
+| `HealthChecker` | Checker class. |
+
+#### Cluster types
+
+| Type | Description |
+|---|---|
+| `ClusterInfo` | `{ mode, status, nodeCount?, slotCount?, nodes?, host?, port?, error? }`. |
+| `ClusterSlotRange` | `{ start, end, master, replicas }`. |
+| `ClusterSlotNode` | `{ host, port, nodeId? }`. |
+
+#### Connection types
+
+| Type | Description |
+|---|---|
+| `ConnectionState` | `'disconnected' \| 'connecting' \| 'connected' \| 'error' \| 'closed'`. |
+| `ConnectionStatus` | `{ state, connected, ready, lastError?, reconnectAttempts, uptime }`. |
+| `RedisEventMap` | Event map for the underlying client. |
+
+#### Session types (exported at root)
+
+| Type | Description |
+|---|---|
+| `SessionManager` | Composition root. |
+| `SessionManagerOptions` | `{ client, config?, encryptionKeyProvider?, revocationStore?, metricsAdapter?, circuitBreaker?, now? }`. |
+| `WithSessionManagerOptions` | `{ config?, encryptionKeyProvider?, metricsAdapter?, now? }` (for `withSession`). |
+| `SessionService` | Application-facing session API. |
+| `SessionServiceDeps` | Service dependencies. |
+| `SessionRepository` | Low-level Redis I/O. |
+| `SessionKeyStrategy` | Key layout. |
+| `SessionTokenManager` | Token + jti. |
+| `SessionMetrics` | Internal metrics. |
+| `SessionMetricsAdapter` | Application-provided metrics sink. |
+| `SessionCircuitBreaker` | Fail-closed breaker. |
+| `CircuitBreakerState` | `'closed' \| 'open' \| 'half_open'`. |
+| `SessionHealthChecker` | Health check. |
+| `SessionHealthStatus` | `{ healthy, latencyMs, errorRate, reachable, checkedAt }`. |
+| `SessionCookieManager` | Cookie helper. |
+| `SerializeCookieOptions` | `serialize` options. |
+| `SerializedCookie` | `{ header, name, value, attributes }`. |
+| `SerializedCookieAttributes` | `{ path, domain?, httpOnly, secure, sameSite, maxAge? }`. |
+| `SessionConfig` | Normalized session configuration. |
+| `SessionConfigInput` | Pre-default Zod input type. |
+| `PartialSessionConfig` | Partial pre-default config. |
+| `SessionRecord` | Persisted session record. |
+| `SessionCreateInput` | Input for `create()`. |
+| `SessionUpdatePatch` | Mutable fields for `update()`. |
+| `CreatedSession` | Result of `create()`. |
+| `RotatedSession` | Result of `rotate()`. |
+| `SessionValidationResult` | Result of `validate()`. |
+| `SessionInvalidReason` | Invalid reason discriminant. |
+| `TouchOutcome` | Touch outcome codes. |
+| `SessionEnvelope` | `PlainSessionEnvelope \| EncryptedSessionEnvelope`. |
+| `EncryptedSessionEnvelope` | AES-256-GCM envelope. |
+| `PlainSessionEnvelope` | JSON envelope (`v: 1`). |
+| `ListOptions` | `findByUser`/`list` options. |
+| `RotateOptions` | `rotate()` options. |
+| `TouchOptions` | `touch()` options. |
+| `UpdateOptions` | `update()` options. |
+| `ValidateOptions` | `validate()` options. |
+| `BindingMismatch` | Binding mismatch details. |
+| `SessionStatus` | `'active' \| 'consumed' \| 'revoked'`. |
+| `RevocationRecord` | Revocation record. |
+| `RevocationStore` | Storage-agnostic revocation interface. |
+| `SessionKeyProvider` | Encryption key provider. |
+| `SessionKeyProvider` | Re-exported from `session-encryption.ts`. |
+
+#### Revocation store types
+
+| Type | Description |
+|---|---|
+| `RedisRevocationStore` | Redis-backed revocation store. |
+| `RedisRevocationStoreOptions` | `{ client, keyPrefix? }`. |
+| `RedisRevocationStoreOptionsSchema` | Zod schema. |
+| `RedisRevocationStoreOptionsInput` | Pre-default Zod input type. |
+
+#### Configuration exports
+
+| Export | Description |
+|---|---|
+| `RedisConfigSchema` | Full Zod schema for `RedisConfig` (with `.transform` for `mode: 'standalone'` default). |
+| `parseSessionConfig` | Validate + apply defaults to a `PartialSessionConfig`. |
+| `redactSessionConfig` | Returns a redacted copy of a `SessionConfig`. |
+| `TTL` / `IDLE_TIMEOUT` / `TOUCH_INTERVAL` | Session config defaults. |
+
+#### Utility exports
+
+| Export | Description |
+|---|---|
+| `RedisError` | Base Redis error. |
+| `calculateRedisClusterSlot` | CRC16 slot calculation. |
+| `hashTag` | Hash-tag extraction. |
+| `RedisConfiguration` | Alias of `RedisConfig`. |
+| `Redis` | The raw `ioredis` type. |
+| `default` | Default export: `{ RedisClient, createRedisClient, Cache, PubSub, DistributedLock, HealthChecker, RateLimiter }`. |
+
 <a name="changelog"></a>
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 
 ---
-*Generated with ioredis-toolkit v0.0.4*
+*Generated with ioredis-toolkit v0.0.5*

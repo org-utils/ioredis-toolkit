@@ -130,6 +130,18 @@ export function validateSessionRecord(value: unknown): SessionRecord {
   if (!isNullish(r.rotatedFrom) && !isString(r.rotatedFrom)) {
     throw new SessionSerializationError({ reason: 'invalid_rotated_from' });
   }
+  // familyId is an identity field, immutable across a lineage's rotations.
+  // Legacy records written before this field existed lack it: they adopt
+  // their own jti as the familyId (self-healing - see rotate.lua, which
+  // does the same fallback for records it reads directly).
+  let familyId: string;
+  if (isNullish(r.familyId)) {
+    familyId = jti;
+  } else if (isString(r.familyId) && r.familyId.length >= 20 && r.familyId.length <= 100 && BASE64URL.test(r.familyId)) {
+    familyId = r.familyId;
+  } else {
+    throw new SessionSerializationError({ reason: 'invalid_family_id' });
+  }
   if (!isNullish(r.rotatedTo) && !isString(r.rotatedTo)) {
     throw new SessionSerializationError({ reason: 'invalid_rotated_to' });
   }
@@ -155,6 +167,7 @@ export function validateSessionRecord(value: unknown): SessionRecord {
     userAgent: (r.userAgent as string | null | undefined) ?? null,
     metadata: (metadata as Record<string, unknown> | null | undefined) ?? null,
     rotatedFrom: (r.rotatedFrom as string | null | undefined) ?? null,
+    familyId,
     rotatedTo: (r.rotatedTo as string | null | undefined) ?? null,
     consumedAt: (r.consumedAt as number | null | undefined) ?? null,
     rotationNonceHash: (r.rotationNonceHash as string | null | undefined) ?? null,
@@ -185,6 +198,7 @@ export function serializeEncryptedSession(record: SessionRecord, provider: Sessi
     exp: record.absoluteExpiresAt,
     rn: record.rotationNonceHash,
     rj: record.rotatedTo,
+    fam: record.familyId,
   };
   return JSON.stringify(envelope);
 }
@@ -248,7 +262,7 @@ export function deserializeSession(raw: string, keyProvider?: SessionKeyProvider
  */
 export function encryptedHeaderOf(record: SessionRecord): Pick<
   EncryptedSessionEnvelope,
-  'st' | 'ver' | 'la' | 'idle' | 'exp' | 'rn' | 'rj'
+  'st' | 'ver' | 'la' | 'idle' | 'exp' | 'rn' | 'rj' | 'fam'
 > {
   return {
     st: record.status,
@@ -258,6 +272,7 @@ export function encryptedHeaderOf(record: SessionRecord): Pick<
     exp: record.absoluteExpiresAt,
     rn: record.rotationNonceHash,
     rj: record.rotatedTo,
+    fam: record.familyId,
   };
 }
 
@@ -282,6 +297,7 @@ export function assertHeaderMatches(
   if (envelope.exp !== header.exp) mismatches.push('exp');
   if (envelope.rn !== header.rn) mismatches.push('rn');
   if (envelope.rj !== header.rj) mismatches.push('rj');
+  if (envelope.fam !== header.fam) mismatches.push('fam');
 
   if (mismatches.length > 0) {
     throw new SessionSerializationError({ reason: 'header_mismatch', fields: mismatches });

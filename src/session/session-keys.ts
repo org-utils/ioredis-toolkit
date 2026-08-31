@@ -122,6 +122,22 @@ export class SessionKeyStrategy {
     return this.ns(`session:{${encodeUserId(userId)}}:session:`);
   }
 
+  /**
+   * Key prefix for a user's rotation-family-head pointers, used by
+   * rotate.lua to construct `{prefix}{familyId}` at runtime (the familyId
+   * is only known once the script reads the old session record, so it
+   * cannot be precomputed as a literal key - see rotate.lua). Same
+   * `{userId}` hash tag as every other per-user key, so this is always
+   * same-slot with the session it may need to revoke.
+   *
+   * The family-head value is a correlation pointer used only to detect and
+   * respond to stolen-refresh-token reuse; per I7 it is never consulted by
+   * validate() and can never by itself grant authentication.
+   */
+  familyHeadKeyPrefix(userId: string): string {
+    return this.ns(`family-head:{${encodeUserId(userId)}}:`);
+  }
+
   /** Index key prefix for namespace-scoped administration. */
   namespacePrefix(): string {
     return `${this.namespace}:`;

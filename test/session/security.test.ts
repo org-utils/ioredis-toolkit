@@ -65,6 +65,106 @@ describe('session security (real Redis)', async () => {
     expect(fresh.valid).toBe(true);
   });
 
+  gated('genuine replay of a consumed token revokes the active lineage (plain)', async () => {
+    const m = freshManager(client!, PREFIX, {
+      touchInterval: 1,
+      retainConsumedTombstones: true,
+      revokeFamilyOnReplay: true,
+    });
+    const created = await m.service.create({ userId: 'su-2b' });
+
+    // gen1 -> gen2 -> gen3: gen1's token is now a stale, already-consumed
+    // predecessor two generations behind the current active session.
+    const gen2 = await m.service.rotate(created.token, { userId: 'su-2b' });
+    const gen3 = await m.service.rotate(gen2.token!, { userId: 'su-2b' });
+    expect((await m.service.validate(gen3.token!, { userId: 'su-2b' })).valid).toBe(true);
+
+    // Replaying gen1's already-consumed token (different nonce, so this is
+    // not an idempotent retry) is a strong stolen-token signal: the whole
+    // lineage's currently active generation (gen3) must die, not just this
+    // one request get rejected.
+    await expect(
+      m.service.rotate(created.token, { userId: 'su-2b', rotationNonce: 'attacker-retry' }),
+    ).rejects.toMatchObject({
+      name: 'SessionReplayError',
+      details: expect.objectContaining({ reason: 'family_revoked' }),
+    });
+
+    const stillActive = await m.service.validate(gen3.token!, { userId: 'su-2b' });
+    expect(stillActive.valid).toBe(false);
+  });
+
+  gated(
+    'genuine replay of a consumed token revokes the active lineage (encrypted)',
+    async () => {
+      const keyProvider = createRandomSessionKeyProvider(1);
+      const m = freshManager(
+        client!,
+        PREFIX,
+        {
+          touchInterval: 1,
+          retainConsumedTombstones: true,
+          revokeFamilyOnReplay: true,
+          encryption: { enabled: true },
+        },
+        { keyProvider },
+      );
+      const created = await m.service.create({ userId: 'su-2c' });
+      const gen2 = await m.service.rotate(created.token, { userId: 'su-2c' });
+      const gen3 = await m.service.rotate(gen2.token!, { userId: 'su-2c' });
+      expect((await m.service.validate(gen3.token!, { userId: 'su-2c' })).valid).toBe(true);
+
+      await expect(
+        m.service.rotate(created.token, { userId: 'su-2c', rotationNonce: 'attacker-retry' }),
+      ).rejects.toMatchObject({
+        name: 'SessionReplayError',
+        details: expect.objectContaining({ reason: 'family_revoked' }),
+      });
+
+      const stillActive = await m.service.validate(gen3.token!, { userId: 'su-2c' });
+      expect(stillActive.valid).toBe(false);
+    },
+  );
+
+  gated('replay of a consumed token without revokeFamilyOnReplay only rejects that request', async () => {
+    const m = freshManager(client!, PREFIX, {
+      touchInterval: 1,
+      retainConsumedTombstones: true,
+      // revokeFamilyOnReplay defaults to false.
+    });
+    const created = await m.service.create({ userId: 'su-2d' });
+    const gen2 = await m.service.rotate(created.token, { userId: 'su-2d' });
+
+    await expect(
+      m.service.rotate(created.token, { userId: 'su-2d', rotationNonce: 'other' }),
+    ).rejects.toMatchObject({ name: 'SessionRevokedError' });
+
+    // The current generation is untouched: default behavior only rejects
+    // the one replayed request, exactly as before this feature existed.
+    const stillActive = await m.service.validate(gen2.token!, { userId: 'su-2d' });
+    expect(stillActive.valid).toBe(true);
+  });
+
+  gated('a same-nonce retry never triggers family revocation', async () => {
+    const m = freshManager(client!, PREFIX, {
+      touchInterval: 1,
+      retainConsumedTombstones: true,
+      revokeFamilyOnReplay: true,
+    });
+    const created = await m.service.create({ userId: 'su-2e' });
+    const nonce = 'idempotent-retry-nonce';
+
+    const first = await m.service.rotate(created.token, { userId: 'su-2e', rotationNonce: nonce });
+    // A retry with the SAME nonce is the client re-sending after a lost
+    // response, not an attacker: must replay cleanly, not revoke anything.
+    const retry = await m.service.rotate(created.token, { userId: 'su-2e', rotationNonce: nonce });
+    expect(retry.replayed).toBe(true);
+    expect(retry.session.jti).toBe(first.session.jti);
+
+    const stillActive = await m.service.validate(first.token!, { userId: 'su-2e' });
+    expect(stillActive.valid).toBe(true);
+  });
+
   gated('tampered plain record is invalid and cleaned up', async () => {
     const m = freshManager(client!, PREFIX, { touchInterval: 1 });
     const created = await m.service.create({

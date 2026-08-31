@@ -1,19 +1,19 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 import { Cache } from '../src/cache.js';
-import type { RedisConfig } from '../src/types.js';
+import type { CacheInputConfig, RedisConfig } from '../src/types.js';
 import { asWrapper, fakeClient, silentLogger } from './helpers/fake-redis.js';
 
 const config = {
   mode: 'standalone',
   host: 'localhost',
-  port: 6379,
-  cache: {
-  defaultTTL: 3600,
-  compressionThreshold: 1024,
-    namespace: 'cache',
+  cacheOptions: {
+    defaultTTL: 3600,
+    compressionThreshold: 1024,
+    namespace: "cache",
   },
-};
+  port: 6379,
+}  as RedisConfig;
 
 describe('Cache', () => {
   let cache: Cache;
@@ -21,7 +21,7 @@ describe('Cache', () => {
 
   beforeEach(() => {
     fake = fakeClient();
-    cache = new Cache(asWrapper(fake), config.cache, silentLogger);
+    cache = new Cache(asWrapper(fake), config.cacheOptions as CacheInputConfig, silentLogger);
   });
 
   it('stores and retrieves strings', async () => {
@@ -55,8 +55,8 @@ describe('Cache', () => {
   });
 
   it('compresses values above the threshold and restores them', async () => {
-    const smallConfig = { ...config,  cache: { ...config.cache, compressionThreshold: 5  } } ;
-    const smallCache = new Cache(asWrapper(fake), smallConfig.cache, silentLogger);
+    const smallConfig = { ...config.cacheOptions, compressionThreshold: 10 } as CacheInputConfig;
+    const smallCache = new Cache(asWrapper(fake), smallConfig, silentLogger);
 
     const longValue = { payload: 'x'.repeat(5000) };
     expect(await smallCache.set('big', longValue)).toBe(true);
