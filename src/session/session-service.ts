@@ -10,6 +10,7 @@ import {
   SessionExpiredError,
   SessionInvalidError,
   SessionNotFoundError,
+  SessionReplayError,
   SessionRevokedError,
   SessionRotationError,
   SessionSerializationError,
@@ -27,6 +28,7 @@ import type {
   CreatedSession,
   EncryptedSessionEnvelope,
   ListOptions,
+  ReconcileUserResult,
   RotateOptions,
   RotatedSession,
   SessionCreateInput,
@@ -240,6 +242,10 @@ export class SessionService {
         rotatedTo: null,
         consumedAt: null,
         rotationNonceHash: null,
+        // First generation of a lineage: familyId equals its own jti (the
+        // convention rotate.lua's self-heal also falls back to for legacy
+        // records missing the field - see session-types.ts).
+        familyId: jti,
       };
 
       const ttl = Math.max(1, record.absoluteExpiresAt - now);
@@ -423,6 +429,14 @@ export class SessionService {
         rotatedTo: null,
         consumedAt: null,
         rotationNonceHash: null,
+        // Placeholder only: familyId is an identity field decided
+        // authoritatively from the OLD session, not the app. The plain-path
+        // script (rotate.lua) always overwrites this before writing; the
+        // encrypted path resolves the real value from the just-decrypted
+        // predecessor in SessionRepository.rotate() (Lua can't rewrite
+        // ciphertext, so that's the only place it can be fixed up). Any
+        // syntactically valid jti-shaped string is fine here.
+        familyId: oldJti,
       };
 
       const result = await this.repository.rotate({
@@ -434,6 +448,7 @@ export class SessionService {
           : {}),
         ...(rotationNonceHash !== undefined ? { rotationNonceHash } : {}),
         retainTombstone: this.config.retainConsumedTombstones,
+        revokeFamilyOnReplay: this.config.revokeFamilyOnReplay,
       });
 
       if (result.code === 1 || result.code === 2) {
@@ -461,6 +476,24 @@ export class SessionService {
         // hash is stored): the caller must treat the outcome as ambiguous
         // and re-authenticate rather than reusing the old token.
         return replayed ? { session, replayed } : { token: successorToken, session, replayed };
+      }
+
+      if (result.code === -6) {
+        // Genuine reuse of an already-rotated-away token: the entire
+        // lineage's currently active generation was atomically revoked
+        // (this is a strong security signal, never an infra/storage
+        // failure - see SessionReplayError, not SessionStorageError, so it
+        // never trips the circuit breaker per guard()'s classification).
+        // The old jti-index entry (if any) no longer points anywhere
+        // useful; best-effort clean it up.
+        await this.repository.deleteJtiIndex(oldJti);
+        throw new SessionReplayError({
+          reason: 'family_revoked',
+          ...(result.familyId !== undefined ? { familyId: result.familyId } : {}),
+          ...(result.headJtiRevoked !== undefined
+            ? { headJtiRevoked: result.headJtiRevoked }
+            : {}),
+        });
       }
 
       throw rotationError(result.code, result.status);
@@ -613,6 +646,41 @@ export class SessionService {
     return this.guard('set_security_version', async () => {
       validateUserId(userId);
       return this.repository.getSecurityVersion(userId);
+    });
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Reconciliation (ยง25 / ยง67 / ยง68)                                        */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * Bounded administrative repair pass for one user: prunes stale
+   * user-index entries and, when the global jti index is enabled, rewrites
+   * any missing/stale jti-index entry for that user's live active sessions.
+   *
+   * This is NOT required for authentication correctness - every read path
+   * (validate/touch/rotate) already treats the session record as
+   * authoritative and self-heals stale index entries lazily. This exists
+   * purely to shrink the window during which JTI-only lookup (`find(jti)`
+   * without a known userId) can miss a live session after a partial write
+   * (ยง67), and to give operators a way to proactively repair known drift
+   * (e.g. after a Redis incident) instead of waiting for it to be hit
+   * randomly. Safe to call repeatedly; every effect is idempotent.
+   *
+   * Bounded by config.limits.maxSessionsPerUserHardCap, same as
+   * revokeAll/deleteByUser - never scans the cluster and is not called
+   * from a hot auth path.
+   */
+  reconcileUser(userId: string): Promise<ReconcileUserResult> {
+    return this.guard('reconcile_user', async () => {
+      validateUserId(userId);
+      const result = await this.repository.reconcileUser(
+        userId,
+        this.config.limits.maxSessionsPerUserHardCap,
+        this.now(),
+      );
+      this.metrics.reconcileUser(result.jtiIndexRepaired, result.staleIndexRemoved);
+      return { userId, ...result };
     });
   }
 

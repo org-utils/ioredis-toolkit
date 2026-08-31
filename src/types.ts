@@ -68,7 +68,7 @@ export const CacheOptionsSchema = z.object({
   defaultTTL: z.number().int().min(0).default(3_600),
 
   compressionThreshold: z.number().int().min(1).default(1_024),
-  namespace: z.string().min(1).default("cache"),
+  namespace: z.string().default('')
 });
 export type CacheInputConfig = z.input<typeof CacheOptionsSchema>
 export type CacheStats = {

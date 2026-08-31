@@ -1,13 +1,12 @@
-import { RedisClientWrapper } from './client.js';
+import { RedisClientWrapper } from "./client.js";
 
-import { RedisConfig, CacheOptions, CacheInputConfig } from './types.js';
-import zlib from 'node:zlib';
-import { promisify } from 'node:util';
-import { defaultLogger, LoggerLike } from './logger.js';
+import { RedisConfig, CacheOptions, CacheInputConfig } from "./types.js";
+import zlib from "node:zlib";
+import { promisify } from "node:util";
+import { defaultLogger, LoggerLike } from "./logger.js";
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
-
 
 /**
  * Cache layer on top of {@link RedisClientWrapper} with JSON serialization,
@@ -42,7 +41,7 @@ export class Cache {
    *     applied when no per-call TTL is specified.
    *   - `compressionThreshold` (number, optional, default: `1024`) - Byte threshold
    *     above which values are gzip-compressed transparently.
-   *   - `namespace` (string, optional, default: `cache`) - Namespace prefix for all keys.
+   *   - `namespace` (string, optional, default: `''`) - Namespace prefix for all keys.
    * - `logger` - Optional pino-compatible logger. Supports `trace/debug/info/warn/error/fatal`
    *   levels and `child()` for namespace logging. Defaults to `console`.
    *
@@ -51,26 +50,32 @@ export class Cache {
    *
    * **Example:**
    * ```ts
-   * const cache = new Cache(client, { defaultTTL: 600, compressionThreshold: 2048, namespace: "myapp" });
+   * const cache = new Cache(client, { defaultTTL: 600, compressionThreshold: 2048, namespace: 'myapp' });
    * ```
    */
-  constructor(client: RedisClientWrapper, config: CacheInputConfig, logger: LoggerLike = defaultLogger) {
+  constructor(
+    client: RedisClientWrapper,
+    config: CacheInputConfig,
+    logger: LoggerLike = defaultLogger
+  ) {
     this.client = client;
-    this.logger = logger.child({ component: 'Cache' });
+    this.logger = logger.child({ component: "Cache" });
     // this.config = config;
     this.defaultTTL = config.defaultTTL || 3600;
     this.compressionThreshold = config.compressionThreshold || 1024;
-    this.namespace = config.namespace?.trim() || "cache";
+    this.namespace = config.namespace || "";
   }
 
-  private async serialize<T>(value: T): Promise<{ data: Buffer; compressed: boolean }> {
+  private async serialize<T>(
+    value: T
+  ): Promise<{ data: Buffer; compressed: boolean }> {
     // Convert to Buffer
     let data: Buffer;
     if (Buffer.isBuffer(value)) {
       data = value;
-    } else if (typeof value === 'string') {
+    } else if (typeof value === "string") {
       data = Buffer.from(value);
-    } else if (typeof value === 'number' || typeof value === 'boolean') {
+    } else if (typeof value === "number" || typeof value === "boolean") {
       data = Buffer.from(String(value));
     } else {
       // JSON for objects
@@ -83,7 +88,7 @@ export class Cache {
         const compressed = await gzip(data);
         return { data: compressed, compressed: true };
       } catch (error) {
-        this.logger.warn('Compression failed, storing uncompressed');
+        this.logger.warn("Compression failed, storing uncompressed");
         return { data, compressed: false };
       }
     }
@@ -97,7 +102,7 @@ export class Cache {
       try {
         buffer = await gunzip(data);
       } catch (error) {
-        this.logger.warn('Decompression failed, trying raw data');
+        this.logger.warn("Decompression failed, trying raw data");
         // Attempt to use raw data if decompression fails
       }
     }
@@ -105,7 +110,7 @@ export class Cache {
     // Try to parse as JSON if it looks like JSON
     const str = buffer.toString();
     try {
-      if (str.startsWith('{') || str.startsWith('[')) {
+      if (str.startsWith("{") || str.startsWith("[")) {
         return JSON.parse(str);
       }
     } catch {
@@ -115,11 +120,15 @@ export class Cache {
     return str as T;
   }
 
+  private get getNamespace(): string {
+    return this.namespace?.trim() ? `${this.namespace}:` : "";
+  }
+
   private getKey(key: string, namespace?: string): string {
     if (namespace?.trim()) {
-      return `${this.namespace}:${namespace.trim()}:${key}`;
+      return `${this.getNamespace}${namespace.trim()}:${key}`;
     }
-    return `${this.namespace}:${key}`;
+    return `${this.getNamespace}${key}`;
   }
 
   /**
@@ -186,7 +195,7 @@ export class Cache {
       // Check if stored with metadata
       const parsed = JSON.parse(raw);
       if (parsed._compressed && parsed._data) {
-        const data = Buffer.from(parsed._data, 'base64');
+        const data = Buffer.from(parsed._data, "base64");
         return this.deserialize<T>(data, parsed._compressed);
       }
       // Legacy format - try to parse as JSON
@@ -228,7 +237,7 @@ export class Cache {
    *
    * **Type Parameters:**
    * - `T` - The type of the value being stored. Can be any serializable JavaScript value.
- *
+   *
    * **Returns:**
    * - `true` when the value was stored successfully (`result === 'OK'`).
    *
@@ -261,7 +270,8 @@ export class Cache {
   ): Promise<boolean> {
     const fullKey = this.getKey(key, options.namespace);
     const ttl = options.ttl || this.defaultTTL;
-    const shouldCompress = options.compress !== undefined ? options.compress : true;
+    const shouldCompress =
+      options.compress !== undefined ? options.compress : true;
 
     try {
       let rawValue: string | Buffer;
@@ -272,13 +282,13 @@ export class Cache {
           // Store with metadata
           rawValue = JSON.stringify({
             _compressed: true,
-            _data: data.toString('base64'),
+            _data: data.toString("base64"),
           });
         } else {
           rawValue = data;
         }
       } else {
-        if (typeof value === 'string') {
+        if (typeof value === "string") {
           rawValue = value;
         } else if (Buffer.isBuffer(value)) {
           rawValue = value;
@@ -288,10 +298,14 @@ export class Cache {
       }
 
       const result = await this.client.set(fullKey, rawValue, ttl);
-      this.logger.debug('Cache set', { key: fullKey, ttl, compressed: shouldCompress });
-      return result === 'OK';
+      this.logger.debug("Cache set", {
+        key: fullKey,
+        ttl,
+        compressed: shouldCompress,
+      });
+      return result === "OK";
     } catch (error) {
-      this.logger.error('Cache set failed:', error as Record<string, any>);
+      this.logger.error("Cache set failed:", error as Record<string, any>);
       return false;
     }
   }
@@ -348,11 +362,12 @@ export class Cache {
     const ttl = options.ttl || this.defaultTTL;
 
     try {
-      const rawValue = typeof value === 'string' ? value : JSON.stringify(value);
+      const rawValue =
+        typeof value === "string" ? value : JSON.stringify(value);
       const result = await this.client.setnx(fullKey, rawValue, ttl);
       return result === 1;
     } catch (error) {
-      this.logger.error('Cache setNX failed:', error as Record<string, any>);
+      this.logger.error("Cache setNX failed:", error as Record<string, any>);
       return false;
     }
   }
@@ -412,11 +427,12 @@ export class Cache {
     const ttl = options.ttl || this.defaultTTL;
 
     try {
-      const rawValue = typeof value === 'string' ? value : JSON.stringify(value);
+      const rawValue =
+        typeof value === "string" ? value : JSON.stringify(value);
       const result = await this.client.setexnx(fullKey, rawValue, ttl);
-      return result === 'OK';
+      return result === "OK";
     } catch (error) {
-      this.logger.error('Cache setEXNX failed:', error as Record<string, any>);
+      this.logger.error("Cache setEXNX failed:", error as Record<string, any>);
       return false;
     }
   }
@@ -458,7 +474,7 @@ export class Cache {
    * const [a, b] = await cache.mget(['user:1', 'user:2']);
    * ```
    */
-/**
+  /**
    * Reads multiple cache keys in one call.
    *
    * **Behavior:**
@@ -474,7 +490,7 @@ export class Cache {
    * **Returns:**
    * - An array of values in the same order as the input `keys`. Each element is `T | null`.
    *   `null` indicates the key did not exist.
- *
+   *
    * **Example:**
    * ```ts
    * const [a, b] = await cache.mget(['user:1', 'user:2']);
@@ -489,8 +505,11 @@ export class Cache {
    *
    * @returns Values in input order; `null` for missing keys.
    */
-  async mget<T = any>(keys: string[], namespace?: string): Promise<(T | null)[]> {
-    const fullKeys = keys.map(k => this.getKey(k, namespace));
+  async mget<T = any>(
+    keys: string[],
+    namespace?: string
+  ): Promise<(T | null)[]> {
+    const fullKeys = keys.map((k) => this.getKey(k, namespace));
     const raw = await this.client.mgetClusterAware(fullKeys);
 
     return Promise.all(
@@ -499,7 +518,7 @@ export class Cache {
         try {
           const parsed = JSON.parse(item);
           if (parsed._compressed && parsed._data) {
-            const data = Buffer.from(parsed._data, 'base64');
+            const data = Buffer.from(parsed._data, "base64");
             return this.deserialize<T>(data, parsed._compressed);
           }
           return parsed;
@@ -593,7 +612,8 @@ export class Cache {
       const groups = new Map<number, Array<[string, string | Buffer]>>();
       for (const [key, value] of Object.entries(entries)) {
         const fullKey = this.getKey(key, namespace);
-        const rawValue = typeof value === 'string' ? value : JSON.stringify(value);
+        const rawValue =
+          typeof value === "string" ? value : JSON.stringify(value);
         const slot = this.client.calculateSlot(fullKey);
         if (!groups.has(slot)) {
           groups.set(slot, []);
@@ -604,16 +624,16 @@ export class Cache {
       for (const group of groups.values()) {
         const pipeline = this.client.pipeline();
         for (const [fullKey, rawValue] of group) {
-          pipeline.set(fullKey, rawValue, 'EX', ttl);
+          pipeline.set(fullKey, rawValue, "EX", ttl);
         }
         const results = await pipeline.exec();
-        if (!results?.every((result: any) => result[1] === 'OK')) {
+        if (!results?.every((result: any) => result[1] === "OK")) {
           return false;
         }
       }
       return true;
     } catch (error) {
-      this.logger.error('Cache mset failed:', error as Record<string, any>);
+      this.logger.error("Cache mset failed:", error as Record<string, any>);
       return false;
     }
   }
@@ -639,7 +659,7 @@ export class Cache {
    *
    * **Returns:**
    * - `true` if the key existed and was deleted.
- *
+   *
    * **Example:**
    * ```ts
    * const removed = await cache.delete('user:1');
@@ -813,7 +833,11 @@ export class Cache {
    *
    * @returns The new counter value.
    */
-  async increment(key: string, by: number = 1, namespace?: string): Promise<number> {
+  async increment(
+    key: string,
+    by: number = 1,
+    namespace?: string
+  ): Promise<number> {
     const fullKey = this.getKey(key, namespace);
     return this.client.incr(fullKey);
   }
@@ -857,7 +881,11 @@ export class Cache {
    *
    * @returns The new counter value.
    */
-  async decrement(key: string, by: number = 1, namespace?: string): Promise<number> {
+  async decrement(
+    key: string,
+    by: number = 1,
+    namespace?: string
+  ): Promise<number> {
     const fullKey = this.getKey(key, namespace);
     return this.client.decr(fullKey);
   }
@@ -900,7 +928,11 @@ export class Cache {
    *
    * @returns The field value, or `null`.
    */
-  async hget<T = any>(key: string, field: string, namespace?: string): Promise<T | null> {
+  async hget<T = any>(
+    key: string,
+    field: string,
+    namespace?: string
+  ): Promise<T | null> {
     const fullKey = this.getKey(key, namespace);
     const result = await this.client.hget(fullKey, field);
     if (!result) return null;
@@ -951,9 +983,14 @@ export class Cache {
    *
    * @returns `true` if a new field was created.
    */
-  async hset(key: string, field: string, value: any, namespace?: string): Promise<boolean> {
+  async hset(
+    key: string,
+    field: string,
+    value: any,
+    namespace?: string
+  ): Promise<boolean> {
     const fullKey = this.getKey(key, namespace);
-    const rawValue = typeof value === 'string' ? value : JSON.stringify(value);
+    const rawValue = typeof value === "string" ? value : JSON.stringify(value);
     const result = await this.client.hset(fullKey, field, rawValue);
     return result === 1;
   }
@@ -993,7 +1030,10 @@ export class Cache {
    *
    * @returns Object mapping fields to values (JSON-parsed when possible).
    */
-  async hgetall<T = any>(key: string, namespace?: string): Promise<Record<string, T>> {
+  async hgetall<T = any>(
+    key: string,
+    namespace?: string
+  ): Promise<Record<string, T>> {
     const fullKey = this.getKey(key, namespace);
     const result = await this.client.hgetall(fullKey);
 
@@ -1049,12 +1089,7 @@ export class Cache {
    * @returns The number of deleted keys.
    */
   async deletePattern(pattern: string, namespace?: string): Promise<number> {
-    let fullPattern: string;
-    if (namespace?.trim()) {
-      fullPattern = `${this.namespace}:${namespace.trim()}:${pattern}`;
-    } else {
-      fullPattern = `${this.namespace}:${pattern}`;
-    }
+    const fullPattern = this.getKey(pattern, namespace)
     let deleted = 0;
 
     for await (const key of this.client.scanIterator(fullPattern)) {
@@ -1106,12 +1141,8 @@ export class Cache {
    * @returns Matching keys.
    */
   async keys(pattern: string, namespace?: string): Promise<string[]> {
-    let fullPattern;
-    if (namespace?.trim()) {
-      fullPattern = `${this.namespace}:${namespace.trim()}:${pattern}`;
-    } else {
-      fullPattern = `${this.namespace}:${pattern}`;
-    }
+    const fullPattern = this.getKey(pattern, namespace)
+
     const keys: string[] = [];
 
     for await (const key of this.client.scanIterator(fullPattern)) {
@@ -1156,6 +1187,6 @@ export class Cache {
    * @returns The number of deleted keys.
    */
   async clearNamespace(namespace: string): Promise<number> {
-    return this.deletePattern('*', namespace);
+    return this.deletePattern("*", namespace);
   }
 }

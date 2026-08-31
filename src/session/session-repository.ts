@@ -344,7 +344,8 @@ export class SessionRepository {
     expectedVersion?: number;
     rotationNonceHash?: string;
     retainTombstone: boolean;
-  }): Promise<{ code: number; successorJti?: string; status?: string }> {
+    revokeFamilyOnReplay: boolean;
+  }): Promise<{ code: number; successorJti?: string; status?: string; familyId?: string; headJtiRevoked?: string }> {
     const { userId, oldJti, successor } = options;
     const oldKey = this.keys.sessionKey(userId, oldJti);
     const newKey = this.keys.sessionKey(userId, successor.jti);
@@ -353,6 +354,9 @@ export class SessionRepository {
     const expected = options.expectedVersion !== undefined ? String(options.expectedVersion) : '';
     const nonce = options.rotationNonceHash ?? '';
     const retain = options.retainTombstone ? '1' : '0';
+    const sessionPrefix = this.keys.sessionKeyPrefix(userId);
+    const familyHeadPrefix = this.keys.familyHeadKeyPrefix(userId);
+    const revokeFamily = options.revokeFamilyOnReplay ? '1' : '0';
 
     if (!this.encrypted) {
       const serialized = serializeSession(successor);
@@ -368,6 +372,9 @@ export class SessionRepository {
         nonce,
         retain,
         oldJti,
+        sessionPrefix,
+        familyHeadPrefix,
+        revokeFamily,
       );
 
       const outcome = parseRotateResult(result, successor.jti);
@@ -377,7 +384,14 @@ export class SessionRepository {
       return outcome;
     }
 
-    // Encrypted path.
+    // Encrypted path. The GET below is informational only (ยง18/ยง78): it
+    // lets us build well-formed re-encrypted payloads for the optimistic
+    // success path (ciphertext can't be built inside Lua), but every state
+    // decision - already consumed/revoked, expired, version conflict, and
+    // family-head reuse - is made authoritatively by the script from its
+    // own atomic read, never from this snapshot. A concurrent writer may
+    // have already invalidated it by the time the script actually runs;
+    // the script is the only party allowed to decide or write.
     const raw = await this.client.get(oldKey);
     if (raw === null) {
       await this.cleanupJtiIndex(oldJti);
@@ -394,24 +408,7 @@ export class SessionRepository {
       throw error;
     }
 
-    if (current.status !== 'active') {
-      // Retry-safe replay: the stored rotatedTo jti is authoritative; the
-      // retry's freshly generated successor jti must never be compared
-      // against it (it is discarded, exactly like the plain path).
-      if (nonce !== '' && current.rotationNonceHash === nonce && current.rotatedTo !== null) {
-        return { code: 2, successorJti: current.rotatedTo };
-      }
-      return { code: -1, status: current.status };
-    }
-
     const now = Math.floor(Date.now() / 1000);
-    if (current.absoluteExpiresAt <= now) {
-      await this.client.del(oldKey);
-      return { code: -2 };
-    }
-    if (options.expectedVersion !== undefined && current.version !== options.expectedVersion) {
-      return { code: -3 };
-    }
 
     const consumed: SessionRecord = {
       ...current,
@@ -421,9 +418,19 @@ export class SessionRepository {
       rotationNonceHash: nonce !== '' ? nonce : null,
     };
 
+    // familyId is an identity field: self-heal from the (informational)
+    // old record, exactly like rotate.lua does authoritatively for the
+    // plain path. The Lua script can never rewrite ciphertext, so this is
+    // the only place the encrypted successor's real familyId can be set;
+    // the script still cross-checks the plaintext `fam` mirror it derives
+    // against this on every future read (assertHeaderMatches), so a bug
+    // here fails closed instead of silently mislabeling the lineage.
+    const familyId = current.familyId || current.jti;
+    const successorWithFamily: SessionRecord = { ...successor, familyId };
+
     const consumedSerialized = serializeEncryptedSession(consumed, this.keyProvider!);
-    const successorSerialized = serializeEncryptedSession(successor, this.keyProvider!);
-    const successorTtl = Math.max(1, successor.absoluteExpiresAt - now);
+    const successorSerialized = serializeEncryptedSession(successorWithFamily, this.keyProvider!);
+    const successorTtl = Math.max(1, successorWithFamily.absoluteExpiresAt - now);
     const consumedTtl = Math.max(1, consumed.absoluteExpiresAt - now);
 
     const result = await this.scripts.eval(
@@ -434,16 +441,23 @@ export class SessionRepository {
       indexKey,
       consumedSerialized,
       successorSerialized,
-      successor.jti,
+      successorWithFamily.jti,
       expected,
       nonce,
       retain,
       oldJti,
       String(successorTtl),
       String(consumedTtl),
+      sessionPrefix,
+      familyHeadPrefix,
+      revokeFamily,
     );
 
-    return parseRotateResult(result, successor.jti);
+    const outcome = parseRotateResult(result, successorWithFamily.jti);
+    if (outcome.code === 0) {
+      await this.cleanupJtiIndex(oldJti);
+    }
+    return outcome;
   }
 
   /* ------------------------------------------------------------------------ */
@@ -653,6 +667,75 @@ export class SessionRepository {
     }
 
     return sessions;
+  }
+
+  /**
+   * Bounded per-user repair pass (ยง25/ยง67/ยง68): removes stale user-index
+   * entries (same mechanism as {@link listByUser}) and, when the global jti
+   * index is enabled, repairs any live active session whose jti-index entry
+   * is missing or stale (partial-write drift after create/rotate - the
+   * session record itself was authoritative and correct the whole time,
+   * only JTI-only lookup was degraded). Never touches consumed/revoked/
+   * expired sessions: repairing their index entry would make them
+   * JTI-lookupable again, which is unnecessary and works against prompt
+   * self-expiry.
+   *
+   * Bounded by `limit` (capped like every other list/admin operation);
+   * never scans the whole cluster and is safe to call from an
+   * administrative endpoint, not a hot auth path.
+   */
+  async reconcileUser(
+    userId: string,
+    limit: number,
+    now: number,
+  ): Promise<{ checked: number; staleIndexRemoved: number; jtiIndexRepaired: number }> {
+    const jtis = await this.listJtis(userId, limit);
+    if (jtis.length === 0) return { checked: 0, staleIndexRemoved: 0, jtiIndexRepaired: 0 };
+
+    const sessionKeys = jtis.map((jti) => this.keys.sessionKey(userId, jti));
+    const values = await this.client.mget(...sessionKeys);
+
+    const sessions: SessionRecord[] = [];
+    const stale: string[] = [];
+
+    for (let i = 0; i < jtis.length; i++) {
+      const raw = values[i];
+      if (raw === null || raw === undefined) {
+        stale.push(jtis[i]!);
+        continue;
+      }
+      try {
+        sessions.push(deserializeSession(raw, this.keyProvider ?? undefined));
+      } catch (error) {
+        if (error instanceof SessionSerializationError) {
+          stale.push(jtis[i]!);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (stale.length > 0) {
+      await this.cleanupIndexEntries(userId, stale);
+    }
+
+    let jtiIndexRepaired = 0;
+
+    if (this.jtiIndexEnabled) {
+      for (const session of sessions) {
+        if (session.status !== 'active') continue;
+
+        const ttl = Math.max(1, session.absoluteExpiresAt - now);
+        const current = await this.readJtiIndex(session.jti);
+
+        if (current !== userId) {
+          const ok = await this.writeJtiIndex(session.jti, userId, ttl);
+          if (ok) jtiIndexRepaired += 1;
+        }
+      }
+    }
+
+    return { checked: sessions.length, staleIndexRemoved: stale.length, jtiIndexRepaired };
   }
 
   /**
@@ -911,12 +994,24 @@ function mapTouchCode(code: number): TouchOutcome {
 function parseRotateResult(
   result: unknown,
   successorJti: string,
-): { code: number; successorJti?: string; status?: string } {
+): { code: number; successorJti?: string; status?: string; familyId?: string; headJtiRevoked?: string } {
   if (Array.isArray(result) && result.length >= 1) {
     const code = Number(result[0]);
     if (code === 1 || code === 2) {
       const jti = result[1] !== undefined ? String(result[1]) : successorJti;
       return { code, successorJti: jti };
+    }
+    if (code === -6) {
+      // { -6, familyId, headJti } - genuine consumed-token replay: the
+      // family head (if any) was revoked and the pointer cleared. headJti
+      // is '' when no head was set (nothing to revoke, but replay itself
+      // is still reported).
+      const familyId = result[1] !== undefined ? String(result[1]) : undefined;
+      const headJtiRaw = result[2] !== undefined ? String(result[2]) : '';
+      const out: { code: number; familyId?: string; headJtiRevoked?: string } = { code };
+      if (familyId !== undefined) out.familyId = familyId;
+      if (headJtiRaw !== '') out.headJtiRevoked = headJtiRaw;
+      return out;
     }
     const status = result[1] !== undefined ? String(result[1]) : undefined;
     return status !== undefined ? { code, status } : { code };

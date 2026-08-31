@@ -31,6 +31,7 @@ export type SessionOperation =
   | 'list'
   | 'find_by_user'
   | 'set_security_version'
+  | 'reconcile_user'
   | 'health';
 
 const OPERATIONS: readonly SessionOperation[] = [
@@ -46,6 +47,7 @@ const OPERATIONS: readonly SessionOperation[] = [
   'list',
   'find_by_user',
   'set_security_version',
+  'reconcile_user',
   'health',
 ];
 
@@ -147,6 +149,35 @@ export class SessionMetrics {
         1,
         this.topology !== null ? { topology: this.topology } : undefined,
       );
+    } catch {
+      // Metrics must never break authentication.
+    }
+  }
+
+  /**
+   * Records the outcome of one reconcileUser() repair pass: how many
+   * missing/stale jti-index entries it found and repaired or removed.
+   * A non-zero count indicates upstream partial-write drift (ยง67), not an
+   * authentication problem - the session record was authoritative and
+   * correct throughout.
+   */
+  reconcileUser(repaired: number, removed: number): void {
+    if (!this.adapter) return;
+    try {
+      if (repaired > 0) {
+        this.adapter.incCounter(
+          'session.jti_index.reconciled_repaired',
+          repaired,
+          this.topology !== null ? { topology: this.topology } : undefined,
+        );
+      }
+      if (removed > 0) {
+        this.adapter.incCounter(
+          'session.jti_index.reconciled_removed',
+          removed,
+          this.topology !== null ? { topology: this.topology } : undefined,
+        );
+      }
     } catch {
       // Metrics must never break authentication.
     }

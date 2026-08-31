@@ -144,9 +144,10 @@ work on Cluster. No global hash tag is used, so users spread across slots.
 | Key | Type | Purpose |
 | --- | --- | --- |
 | `{ns}:session:{userId}:session:{jti}` | string | session record (TTL = remaining lifetime) |
-| `{ns}:user-sessions:{userId}` | ZSET | per-user index (member = jti, score = createdAt) |
+| `{ns}:user-sessions:{userId}` | ZSET | per-user index (member = jti, score = microsecond-resolution `TIME()` at creation/rotation, for strict oldest-first eviction ordering — **not** `createdAt`, see `docs/architecture.md`) |
 | `{ns}:security-version:{userId}` | string | per-user security version counter |
 | `{ns}:create-claim:{userId}:{jti}` | string | idempotent-create claim (TTL `min(60, ttl)`) |
+| `{ns}:family-head:{userId}:{familyId}` | string | **optional** rotation-lineage head pointer (same-slot; used only for `revokeFamilyOnReplay`, see §7) |
 | `{ns}:jti-index:{jti}` | string | **optional** global jti → userId map (cross-slot, derived state) |
 | `{ns}:revoked:{jti}` | string | **optional** revocation entries (single-key, no tag) |
 
@@ -189,6 +190,7 @@ throws `SessionConfigurationError` at construction.
 | `limits` | object | — | see below |
 | `enableCreateIdempotency` | boolean | `false` | Idempotent `create()` via `idempotencyKey` |
 | `retainConsumedTombstones` | boolean | `true` | Keep consumed records (TTL-bounded) for replay detection |
+| `revokeFamilyOnReplay` | boolean | `false` | Revoke the whole rotation lineage on genuine consumed-token replay (see §7) |
 
 ### Limits
 
@@ -207,6 +209,7 @@ throws `SessionConfigurationError` at construction.
 - `touchInterval` must not exceed `ttl`
 - `sameSite: 'none'` requires `secure: true`
 - `encryption.enabled` requires `encryptionKeyProvider` at construction
+- `revokeFamilyOnReplay` requires `retainConsumedTombstones: true`
 
 `redactSessionConfig(config)` returns a safe-to-log subset.
 
@@ -322,16 +325,37 @@ Single-use atomic rotation. `{ rotationNonce?, userId?, expectedVersion? }`.
   so reuse of the old token is detected: validate → `invalid` (or
   `revoked` for revoked records); another rotate → throws.
 - `expectedVersion` applies optimistic concurrency (stale → throw).
+- **Token-family reuse detection** (`config.revokeFamilyOnReplay`, default
+  `false`): every session carries an immutable `familyId` (the first
+  generation's own jti), unchanged across every rotation of that lineage.
+  A same-slot "family-head" pointer tracks the lineage's current active
+  generation. When an already-consumed predecessor is replayed for real
+  (not a same-nonce retry — see above), that's a strong signal the old
+  token was stolen: the script atomically revokes whatever the family head
+  currently points to and clears it, so the whole lineage dies instead of
+  only the one replayed request being rejected. Requires
+  `retainConsumedTombstones: true` (a replay can only be detected while a
+  tombstone still exists to be replayed against — Zod enforces this
+  relationship). Surfaces as `SessionReplayError({ reason:
+  'family_revoked', familyId, headJtiRevoked? })`, not a storage error, so
+  it never trips the circuit breaker. Works identically for plain and
+  encrypted sessions (the encrypted path decides from a plaintext `fam`
+  header mirror, cross-checked against the decrypted record on every read
+  via `assertHeaderMatches`, since Lua can't see or alter ciphertext). The
+  family-head pointer is purely a defensive correlation key — per I7 it is
+  never consulted by `validate()` and can never itself grant
+  authentication.
 
 Result: `{ token?, session, replayed }` — `token` present and `replayed:
 false` on a fresh rotation; absent on a replay.
 
 Throws: `SessionNotFoundError` (unknown token / `jti_index_miss`),
 `SessionRevokedError` (reuse with wrong/absent nonce on a consumed
-record), `SessionExpiredError`, `SessionConcurrencyError`
-(`version_conflict`), `SessionRotationError` (`successor_collision`,
-`successor_unavailable`), `SessionSerializationError`
-(`envelope_mode_mismatch`).
+record, `revokeFamilyOnReplay` off), `SessionReplayError`
+(`family_revoked`, `revokeFamilyOnReplay` on), `SessionExpiredError`,
+`SessionConcurrencyError` (`version_conflict`), `SessionRotationError`
+(`successor_collision`, `successor_unavailable`),
+`SessionSerializationError` (`envelope_mode_mismatch`).
 
 ### `update(token, patch, options?): Promise<SessionRecord>`
 
@@ -373,6 +397,35 @@ Oldest-first listing. `{ limit? (default 100), offset?, includeInactive?
 Bumps (or sets) the user's security version, invalidating every session
 captured at an older version (validate → `revoked`). Use after password /
 MFA changes. `getSecurityVersion(userId)` reads it.
+
+### `reconcileUser(userId): Promise<ReconcileUserResult>`
+
+Bounded administrative repair pass for one user (ยง25/ยง67/ยง68). Returns
+`{ userId, checked, staleIndexRemoved, jtiIndexRepaired }`.
+
+- `staleIndexRemoved`: user-index entries removed because their session
+  record no longer exists or was corrupt (same lazy self-heal
+  `findByUser`/`validate`/`touch` already do — this just triggers it
+  proactively instead of waiting for it to be hit at random).
+- `jtiIndexRepaired`: only meaningful when `jtiIndex.enabled` — live
+  **active** sessions whose global jti-index entry was missing or pointed
+  at the wrong user get it rewritten. Never touches consumed/revoked
+  sessions: repairing their index entry would make an invalid session
+  JTI-lookupable again, which every read path (I5/I7) already refuses to
+  honor regardless of index state, so doing it here would just be
+  pointless churn.
+
+This exists purely to shrink the window during which JTI-only lookup
+(`validate()`/`get()`/`rotate()` called *without* a known `userId`) can
+miss a live session after a partial write (ยง67 — the session write
+succeeded but its jti-index write didn't) — it is **not** required for
+authentication correctness, since userId-aware lookup is always
+authoritative and every hot path already self-heals lazily. Safe to call
+repeatedly (every effect is idempotent) and bounded by
+`config.limits.maxSessionsPerUserHardCap`, same as `revokeAll`/
+`deleteByUser` — never scans the cluster and isn't meant for a hot path,
+just an operator/incident-response tool (e.g. after a Redis blip, or on a
+schedule for `jtiIndex`-enabled deployments).
 
 ### `health(): Promise<SessionHealthStatus>`
 
@@ -599,7 +652,7 @@ logging.
 | `SessionRevokedError` | `SESSION_REVOKED` | 401 | rotate reuse on a consumed/revoked session |
 | `SessionInvalidError` | `SESSION_INVALID` | 401 | `metadata_too_large`, `metadata_cyclic`, `device_id_too_long`, `ip_address_too_long`, `user_agent_too_long` |
 | `SessionRotationError` | `SESSION_ROTATION_FAILED` | 401 | `successor_collision`, `successor_unavailable` |
-| `SessionReplayError` | `SESSION_REPLAY` | 401 | exported for API compatibility; rotation reuse is thrown as `SessionRevokedError` |
+| `SessionReplayError` | `SESSION_REPLAY` | 401 | `family_revoked` — genuine consumed-token replay with `revokeFamilyOnReplay: true` (see §7) |
 | `SessionConcurrencyError` | `SESSION_CONCURRENCY` | 409 | `version_conflict`, `session_not_active` |
 | `SessionSerializationError` | `SESSION_SERIALIZATION_ERROR` | 401/500 | corrupt/tampered records, `envelope_mode_mismatch`, unknown key version |
 | `SessionConfigurationError` | `SESSION_CONFIGURATION_ERROR` | 500 | invalid config (construction), missing userId without jti index, bad idempotency key |
@@ -625,8 +678,8 @@ tags).
 | `validate.lua` | read + status/expiry/idle checks + lazy cleanup + jti-index cleanup (`ARGV[1]`) + security-version check; v2 (encrypted) branch via header mirrors |
 | `touch.lua` | throttled monotonic activity refresh |
 | `touch-encrypted.lua` | encrypted touch: header-mirror CAS (equal-second writes allowed) |
-| `rotate.lua` | single-use rotation: consume old, create successor, keep tombstone (stored `rotatedTo` authoritative for replays) |
-| `rotate-encrypted.lua` | encrypted rotation with the same replay semantics |
+| `rotate.lua` | single-use rotation: consume old, create successor, keep tombstone (stored `rotatedTo` authoritative for replays), optional family-head reuse revocation |
+| `rotate-encrypted.lua` | encrypted rotation with the same replay and family-head semantics |
 | `conditional-update.lua` | CAS patch update (version conflict → `-3`) |
 | `conditional-update-encrypted.lua` | encrypted CAS patch update |
 | `revoke.lua` | logical revoke with bounded tombstone |
@@ -666,3 +719,531 @@ The scripts ship in the published package under `dist/session/scripts`.
   default; `REDIS_MODE=cluster` / `REDIS_MODE=sentinel` with the compose
   topologies in `test/infra/`; skip cleanly when Redis is unreachable.
 - `npm run typecheck` covers `src/`, `test/` and `scripts/`.
+
+---
+
+## 19. Complete API reference
+
+This section provides JSDoc-style documentation for every public class, method, and type. Use it as a quick lookup for signatures, parameters, return values, and behaviors.
+
+### `SessionManager` class
+
+#### Constructor
+
+```ts
+new SessionManager(options: SessionManagerOptions)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `options.client` | `RedisClientWrapper` | The underlying client (standalone / sentinel / cluster). |
+| `options.config` | `PartialSessionConfig` | Session configuration (defaults applied by `parseSessionConfig`). |
+| `options.encryptionKeyProvider` | `SessionKeyProvider` | **Required** when `config.encryption.enabled` is true. |
+| `options.revocationStore` | `RevocationStore` | External revocation store (JWT jti denylists etc.). |
+| `options.metricsAdapter` | `SessionMetricsAdapter` | Metrics sink (no-op without it). |
+| `options.circuitBreaker` | `SessionCircuitBreaker` | Custom breaker; falls back to the config-built one. |
+| `options.now` | `() => number` | Injectable clock for tests. |
+
+Throws `SessionConfigurationError` when `config.enabled !== true`, when `encryption.enabled` is set without a key provider, or when the config is otherwise invalid.
+
+#### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `config` | `SessionConfig` | Parsed config (defaults applied). |
+| `service` | `SessionService` | The application-facing API (§7). |
+| `repository` | `SessionRepository` | Low-level Redis I/O. |
+| `metrics` | `SessionMetrics` | Metrics facade. |
+| `circuitBreaker` | `SessionCircuitBreaker \| null` | The breaker, when enabled. |
+| `health` | `SessionHealthChecker` | PING + error-rate health. |
+| `cookies` | `SessionCookieManager` | Cookie helpers. |
+| `token` | `SessionTokenManager` | Token + jti. |
+| `keys` | `SessionKeyStrategy` | Cluster-safe key layout. |
+
+#### Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `init()` | Preload every Lua script now (await `SCRIPT LOAD` on all nodes). | — | `Promise<void>` |
+| `close()` | Invalidate the script cache. The Redis client is owned by the application and is not closed. | — | `void` |
+
+### `createSessionManager`
+
+```ts
+function createSessionManager(options: SessionManagerOptions): SessionManager
+```
+
+Synchronous. Use `await manager.init()` when eager script preloading matters (first-call latency). The constructor already kicks off `SCRIPT LOAD` in the background, with automatic `EVAL` fallback on `NOSCRIPT`.
+
+### `SessionService` class
+
+> The full operations reference is §7. This is a one-line summary per method.
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `create(input)` | Create a session. | `SessionCreateInput` | `Promise<CreatedSession>` |
+| `validate(token, options?)` | Validate a token (never throws for invalid sessions). | `token: string`, `ValidateOptions?` | `Promise<SessionValidationResult>` |
+| `touch(token, options?)` | Throttled activity refresh. | `token: string`, `TouchOptions?` | `Promise<TouchOutcome>` |
+| `rotate(token, options?)` | Single-use rotation (retry-safe with a nonce). | `token: string`, `RotateOptions?` | `Promise<RotatedSession>` |
+| `update(token, patch, options?)` | Optimistic-concurrency patch update. | `token: string`, `patch: SessionUpdatePatch`, `UpdateOptions?` | `Promise<SessionRecord>` |
+| `destroy(token, options?)` | Physical, idempotent deletion. | `token: string`, `{ userId? }?` | `Promise<boolean>` |
+| `revoke(token, options?)` | Logical revocation (tombstone). | `token: string`, `{ userId? }?` | `Promise<'revoked' \| 'already_revoked' \| 'not_found'>` |
+| `revokeAll(userId)` | Revoke every session of a user. | `userId: string` | `Promise<number>` |
+| `deleteByUser(userId)` | Physical delete of every session of a user. | `userId: string` | `Promise<string[]>` (removed jtis) |
+| `findByUser(userId, options?)` | List a user's sessions (oldest first). | `userId: string`, `ListOptions?` | `Promise<SessionRecord[]>` |
+| `list(userId, options?)` | Alias of `findByUser`. | as above | `Promise<SessionRecord[]>` |
+| `setSecurityVersion(userId, version?)` | Bump (or set) the user's security version. | `userId: string`, `version?: number` | `Promise<number>` (new version) |
+| `getSecurityVersion(userId)` | Read the current security version. | `userId: string` | `Promise<number \| null>` |
+| `reconcileUser(userId)` | Bounded admin repair pass for one user. | `userId: string` | `Promise<ReconcileUserResult>` |
+| `health()` | Dependency health probe. | — | `Promise<SessionHealthStatus>` |
+
+### `SessionRepository`
+
+Low-level Redis I/O used by `SessionService`. Most application code should call the service; the repository is exposed for advanced operators/tests.
+
+### `SessionTokenManager` class
+
+#### Constructor
+
+```ts
+new SessionTokenManager(tokenBytes?: number)   // default 32 (16..64)
+```
+
+Throws `SessionConfigurationError` when `tokenBytes` is not an integer in `[16, 64]`.
+
+#### Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `generate()` | New raw session token (base64url, no padding). | — | `string` |
+| `generateNonce()` | New rotation nonce of the same strength. | — | `string` |
+| `hash(token)` | SHA-256 of the token, base64url. The persisted jti. | `token: string` | `string` |
+| `validateFormat(token)` | Format/length check (rejects garbage before hashing). | `token: string` | `boolean` |
+| `safeEquals(a, b)` | Constant-time comparison. | `a: string`, `b: string` | `boolean` |
+| `tokenToJti(token)` | Validate + hash; throws `SessionInvalidError({ reason: 'malformed_token' })` for bad input. | `token: string` | `string` |
+
+### `SessionKeyStrategy` class
+
+#### Constructor
+
+```ts
+new SessionKeyStrategy(namespace: string)   // 1..64 chars, no whitespace/glob/hash-tag chars
+```
+
+Throws `SessionConfigurationError` for invalid namespaces.
+
+#### Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `sessionKey(userId, jti)` | `{ns}:session:{userId}:session:{jti}`. | `userId: string`, `jti: string` | `string` |
+| `userIndexKey(userId)` | `{ns}:user-sessions:{userId}` (ZSET, score = microsecond-resolution `TIME()`). | `userId: string` | `string` |
+| `securityVersionKey(userId)` | `{ns}:security-version:{userId}`. | `userId: string` | `string` |
+| `createClaimKey(userId, jti)` | `{ns}:create-claim:{userId}:{jti}` (TTL-bounded idempotency claim). | `userId: string`, `jti: string` | `string` |
+| `jtiIndexKey(jti)` | `{ns}:jti-index:{jti}` (cross-slot, derived state). | `jti: string` | `string` |
+| `revokedKey(jti)` | `{ns}:revoked:{jti}` (single-key, no tag). | `jti: string` | `string` |
+| `sessionKeyPrefix(userId)` | Same-slot prefix for Lua-eviction key construction. | `userId: string` | `string` |
+| `familyHeadKeyPrefix(userId)` | Same-slot prefix for rotation-family-head pointers. | `userId: string` | `string` |
+| `namespacePrefix()` | `{ns}:`. | — | `string` |
+
+#### Helper
+
+| Export | Signature | Description |
+|---|---|---|
+| `encodeUserId(userId)` | `(userId: string) => string` | Deterministic, UTF-8 aware percent-encoding that keeps `[A-Za-z0-9._-]` verbatim and hex-encodes the rest (so `{`, `}`, `:`, `*`, `?`, `[`, `]` can never appear in keys). |
+
+### `SessionMetrics` class
+
+Internal facade. Safe no-op without an adapter; never throws; never affects the hot path.
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `operation(op, outcome, code?)` | Count a completed operation. | `op: SessionOperation`, `outcome: 'ok' \| 'error' \| 'invalid'`, `code?: string` | `void` |
+| `latency(op, ms)` | Record operation duration. | `op: SessionOperation`, `ms: number` | `void` |
+| `breakerState(state)` | Record a circuit-breaker state transition (gauge + counter). | `state: 'closed' \| 'open' \| 'half_open'` | `void` |
+| `revocationMiss()` | Record a fail-closed revocation-store miss. | — | `void` |
+| `encryptionError(reason)` | Record an encryption error. | `reason: string` | `void` |
+| `jtiIndexWriteFailure()` | Record a failed jti-index write (derived-state degradation). | — | `void` |
+| `reconcileUser(repaired, removed)` | Record counts of jti-index entries repaired / removed by `reconcileUser`. | `repaired: number`, `removed: number` | `void` |
+
+#### Adapter
+
+```ts
+interface SessionMetricsAdapter {
+  incCounter(name: string, delta?: number, attributes?: Record<string, string | number>): void;
+  recordHistogram(name: string, value: number, attributes?: Record<string, string | number>): void;
+  setGauge(name: string, value: number, attributes?: Record<string, string | number>): void;
+}
+```
+
+#### Operation type
+
+```ts
+type SessionOperation =
+  | 'create' | 'validate' | 'touch' | 'rotate' | 'update'
+  | 'destroy' | 'revoke' | 'revoke_all' | 'delete_by_user'
+  | 'list' | 'find_by_user' | 'set_security_version'
+  | 'reconcile_user' | 'health';
+```
+
+#### Exported constants
+
+| Export | Description |
+|---|---|
+| `SESSION_OPERATIONS` | The full list of operation names (also the values of `SessionOperation`). |
+
+### `SessionCircuitBreaker` class
+
+#### Constructor
+
+```ts
+new SessionCircuitBreaker(config: SessionCircuitBreakerConfig, options?: { now?, onTransition? })
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `config` | `SessionCircuitBreakerConfig` | `{ enabled, failureThreshold, resetTimeoutMs, halfOpenMaxRequests }`. |
+| `options.now` | `() => number` | Injectable clock (default `Date.now`). |
+| `options.onTransition` | `(state: CircuitBreakerState) => void` | Transition hook (used for metrics). |
+
+#### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `state` | `CircuitBreakerState` | The current state (`'closed'`, `'open'`, or `'half_open'`). |
+
+#### Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `run(fn)` | Run an operation under circuit protection. Throws `CircuitBreakerOpenError` when open. | `fn: () => Promise<T>` | `Promise<T>` |
+| `tryAcquire()` | Synchronously try to acquire a call slot. | — | `boolean` |
+| `recordSuccess()` | Record a successful operation. | — | `void` |
+| `recordFailure()` | Record a failed operation (may open the circuit). | — | `void` |
+| `reset()` | Admin/repair: reset the breaker to `closed`. | — | `void` |
+
+#### Internal helpers (private)
+
+| Method | Description |
+|---|---|
+| `rollHalfOpen()` | Evaluate the open timer; transition to `half_open` if elapsed. |
+| `transitionTo(state)` | Synchronous state transition (Node's single-threaded event loop is race-free). |
+
+### `SessionHealthChecker` class
+
+#### Constructor
+
+```ts
+new SessionHealthChecker(client: RedisClientWrapper, config: SessionHealthConfig, options?: { now? })
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `client` | `RedisClientWrapper` | The underlying client. |
+| `config` | `SessionHealthConfig` | `{ latencyThresholdMs, errorRateThreshold, errorWindowSize }`. |
+| `options.now` | `() => number` | Injectable clock (default `Date.now`). |
+
+#### Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `recordOp(success)` | Feed one operation outcome into the sliding window. | `success: boolean` | `void` |
+| `check()` | PING probe + windowed error rate. Never throws: probe failures surface as `reachable: false`. | — | `Promise<SessionHealthStatus>` |
+
+#### Internal helper (private)
+
+| Method | Description |
+|---|---|
+| `errorRate()` | `failures / total` over the current sliding window. |
+
+#### Status type
+
+```ts
+interface SessionHealthStatus {
+  healthy: boolean;
+  latencyMs: number | null;
+  errorRate: number;
+  reachable: boolean;
+  checkedAt: number;
+}
+```
+
+### `SessionCookieManager` class
+
+#### Constructor
+
+```ts
+new SessionCookieManager(config: SessionCookieConfig)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `config` | `SessionCookieConfig` | `{ name, path, domain?, httpOnly, secure, sameSite, maxAge? }`. |
+
+#### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | `string` | The configured cookie name. |
+
+#### Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `serialize(token, options?)` | Build a `Set-Cookie` header value. | `token: string`, `SerializeCookieOptions?` | `string` |
+| `serializeWithAttributes(token, options?)` | Return both the header string and the structured `SerializedCookie`. | `token: string`, `SerializeCookieOptions?` | `SerializedCookie` |
+| `clear(options?)` | Build a `Set-Cookie` value that expires the cookie. | `SerializeCookieOptions?` | `string` |
+| `parse(header)` | Extract the session token from a `Cookie` request header, or `null`. | `header: string \| null \| undefined` | `string \| null` |
+
+#### Internal helper (private)
+
+| Method | Description |
+|---|---|
+| `buildHeader(token, path, maxAge?)` | Compose the `Set-Cookie` string. |
+
+#### Types
+
+```ts
+interface SerializeCookieOptions {
+  maxAge?: number;
+  path?: string;
+}
+
+interface SerializedCookieAttributes {
+  path: string;
+  domain?: string;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: 'strict' | 'lax' | 'none';
+  maxAge?: number;
+}
+
+interface SerializedCookie {
+  header: string;
+  name: string;
+  value: string;     // the raw session token
+  attributes: SerializedCookieAttributes;
+}
+```
+
+### `SessionKeyProvider` interface
+
+```ts
+interface SessionKeyProvider {
+  getCurrentKey(): { keyVersion: number; key: Buffer | string };
+  getKey(keyVersion: number): Buffer | string | null;
+}
+```
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `getCurrentKey()` | Returns the key used for all WRITES. Called on every encryption. Always return the current key. | — | `{ keyVersion, key }` |
+| `getKey(keyVersion)` | Returns the key for a specific version, or `null` when that version is no longer available. Called on every READ. | `keyVersion: number` | `Buffer \| string \| null` |
+
+Implementations should be backed by a KMS/vault in production. A `null` result on read makes those sessions `SessionInvalidError`.
+
+#### `StaticSessionKeyProvider` class
+
+```ts
+new StaticSessionKeyProvider(keys: ReadonlyMap<number, Buffer | string>, currentVersion: number)
+```
+
+Throws `SessionConfigurationError` when no keys are provided, when `currentVersion` is missing, or when any key is not 32 bytes (AES-256).
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `getCurrentKey()` | Return the configured current key. | — | `{ keyVersion: number, key: Buffer }` |
+| `getKey(keyVersion)` | Return the key for the requested version, or `null`. | `keyVersion: number` | `Buffer \| null` |
+
+#### Helper
+
+| Export | Signature | Description |
+|---|---|---|
+| `toKeyBuffer(key)` | `(key: Buffer \| string) => Buffer` | Normalize a key to a 32-byte `Buffer`. Buffers pass through. Strings are decoded in priority order: 64 hex chars, base64/base64url that decodes to 32 bytes, otherwise utf8. |
+| `createRandomSessionKeyProvider(keyVersion?)` | `(keyVersion?: number) => StaticSessionKeyProvider` | Convenience: a single freshly generated 32-byte key (default version 1). |
+
+### Encryption primitives
+
+| Export | Signature | Description |
+|---|---|---|
+| `encryptPayload(plaintext, provider)` | `(Buffer, SessionKeyProvider) => Pick<EncryptedSessionEnvelope, 'k'\|'i'\|'t'\|'c'>` | AES-256-GCM with a fresh 12-byte IV. |
+| `decryptPayload(envelope, provider)` | `(Pick<EncryptedSessionEnvelope, 'k'\|'i'\|'t'\|'c'>, SessionKeyProvider) => Buffer` | Verify the GCM auth tag. Throws `SessionSerializationError` on unknown key version, malformed fields, or auth failure. |
+| `encryptJson(json, provider)` | `(string, SessionKeyProvider) => Pick<EncryptedSessionEnvelope, 'k'\|'i'\|'t'\|'c'>` | Encrypt a JSON string. |
+| `decryptJson<T>(envelope, provider)` | `<T>(Pick<…, 'k'\|'i'\|'t'\|'c'>, SessionKeyProvider) => T` | Decrypt and parse the JSON inside. Throws `SessionSerializationError` on malformed plaintext. |
+
+### `parseSessionConfig` / `redactSessionConfig`
+
+| Export | Signature | Description |
+|---|---|---|
+| `parseSessionConfig(input?)` | `(PartialSessionConfig) => SessionConfig` | Validate + apply defaults. Throws `SessionConfigurationError` on invalid config. |
+| `redactSessionConfig(config)` | `(SessionConfig) => Record<string, unknown>` | Safe-to-log subset (no secrets). |
+
+#### Exported constants
+
+| Export | Value | Description |
+|---|---|---|
+| `TTL` | `604_800` (7d) | Default absolute session lifetime in seconds. |
+| `IDLE_TIMEOUT` | `86_400` (24h) | Default idle timeout in seconds. |
+| `TOUCH_INTERVAL` | `300` (5m) | Default touch throttle interval in seconds. |
+
+### `SessionScriptRegistry` (`src/session/session-scripts.ts`)
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `preload()` | Preload every Lua script via `SCRIPT LOAD` on every node. | — | `Promise<void>` |
+| `invalidate()` | Drop cached SHAs. | — | `void` |
+| `exec(op, keys, argv)` | Run the registered script for `op` via `EVALSHA` with `NOSCRIPT` → `EVAL` fallback. | `op: ScriptOp`, `keys: string[]`, `argv: unknown[]` | `Promise<unknown>` |
+
+### `RedisRevocationStore` class
+
+#### Constructor
+
+```ts
+new RedisRevocationStore(options: RedisRevocationStoreOptions)
+```
+
+| Param | Type | Description |
+|---|---|---|
+| `options.client` | `RedisClientWrapper` | The underlying client. |
+| `options.keyPrefix` | `string` | Key prefix (default `'cache:revoked:'`). |
+
+#### Methods
+
+| Method | Description | Args | Returns |
+|---|---|---|---|
+| `revoke(record)` | Mark a jti as revoked for the remainder of its lifetime. | `record: RevocationRecord` | `Promise<void>` |
+| `revokeMany(records)` | Revoke many jtis in one slot-grouped pipeline. | `records: RevocationRecord[]` | `Promise<void>` |
+| `isRevoked(jti)` | Check whether a jti is currently revoked (fail-closed). | `jti: string` | `Promise<boolean>` |
+| `isRevokedMany(jtis)` | Batched check (one round trip, fail-closed). | `jtis: string[]` | `Promise<Set<string>>` |
+
+#### Internal helper (private)
+
+| Method | Description |
+|---|---|
+| `key(jti)` | Build the full Redis key (`{prefix}{jti}`). |
+
+### Errors (`src/session/session-errors.ts`)
+
+All extend `SessionError`, which extends `RedisError`. Messages never include raw tokens, cookies, keys, or identifiers. JTI/userId only appear in `details` after redaction.
+
+| Class | Code | HTTP (suggested) | When |
+|---|---|---|---|
+| `SessionError` | `SESSION_ERROR` | — | Base class. |
+| `SessionNotFoundError` | `SESSION_NOT_FOUND` | 401 | Token unknown, record gone, `invalid_token`, `jti_index_miss`. |
+| `SessionExpiredError` | `SESSION_EXPIRED` | 401 | Absolute expiry, or rotate on an expired session. |
+| `SessionRevokedError` | `SESSION_REVOKED` | 401 | Rotate reuse on a consumed/revoked session. |
+| `SessionInvalidError` | `SESSION_INVALID` | 401 | Corrupt / tampered records, `metadata_too_large`, `metadata_cyclic`, `device_id_too_long`, `ip_address_too_long`, `user_agent_too_long`, `malformed_token`. |
+| `SessionRotationError` | `SESSION_ROTATION_FAILED` | 401 | `successor_collision`, `successor_unavailable`. |
+| `SessionReplayError` | `SESSION_REPLAY` | 401 | `family_revoked` — genuine consumed-token replay with `revokeFamilyOnReplay: true`. |
+| `SessionStorageError` | `SESSION_STORAGE_UNAVAILABLE` | **503** | Infra failure; also `circuit_open` fast-fails. The only error that trips the breaker. |
+| `SessionSerializationError` | `SESSION_SERIALIZATION_ERROR` | 401/500 | Corrupt/tampered records, `envelope_mode_mismatch`, unknown key version. |
+| `SessionConfigurationError` | `SESSION_CONFIGURATION_ERROR` | 500 | Invalid config (construction), missing userId without jti index, bad idempotency key. |
+| `SessionConcurrencyError` | `SESSION_CONCURRENCY` | 409 | `version_conflict`, `session_not_active`. |
+| `RevocationError` | `REVOCATION_ERROR` | 503 | Revocation could not be persisted / checked. |
+| `RevocationBatchError` | `REVOCATION_BATCH_ERROR` | 503 | Partial batch failure. `.failures` / `.ids` carry the affected jtis. |
+| `CircuitBreakerOpenError` | `CIRCUIT_OPEN` | 503 | Exported; the service throws `SessionStorageError` (`circuit_open`) instead. |
+
+#### Helper
+
+| Export | Signature | Description |
+|---|---|---|
+| `redactIdentifier(value)` | `(string \| null \| undefined) => string` | Safe-to-log identifier: length and a short opaque suffix only. |
+
+### Public types catalog (session)
+
+#### Configuration types
+
+| Type | Description |
+|---|---|
+| `SessionConfig` | Normalized session configuration (defaults applied). |
+| `SessionConfigInput` | Pre-default Zod input type. |
+| `PartialSessionConfig` | Recursively partial pre-default config. |
+| `SessionCookieConfig` | `{ name, path, domain?, httpOnly, secure, sameSite, maxAge? }`. |
+| `SessionEncryptionConfig` | `{ enabled, reEncryptOnWrite }`. |
+| `SessionMetricsConfig` | `{ enabled }`. |
+| `SessionHealthConfig` | `{ latencyThresholdMs, errorRateThreshold, errorWindowSize }`. |
+| `SessionLimitsConfig` | `{ maxMetadataSize, maxListPageSize, maxBatchSize, maxFanOutConcurrency, maxEvictionsPerCall, maxSessionsPerUserHardCap }`. |
+| `SessionCircuitBreakerConfig` | `{ enabled, failureThreshold, resetTimeoutMs, halfOpenMaxRequests }`. |
+| `SessionCookieConfigSchema` | Zod schema for cookie config. |
+| `SessionEncryptionConfigSchema` | Zod schema for encryption config. |
+| `SessionMetricsConfigSchema` | Zod schema for metrics config. |
+| `SessionHealthConfigSchema` | Zod schema for health config. |
+| `SessionLimitsConfigSchema` | Zod schema for limits config. |
+| `SessionCircuitBreakerConfigSchema` | Zod schema for breaker config. |
+| `SessionConfigSchema` | Full Zod schema for the entire session config. |
+| `SessionStatusSchema` | Zod enum for `'active' \| 'consumed' \| 'revoked'`. |
+| `SessionBindingPolicySchema` | Zod enum for `'disabled' \| 'advisory' \| 'strict'`. |
+
+#### Session record / input / output
+
+| Type | Description |
+|---|---|
+| `SessionStatus` | `'active' \| 'consumed' \| 'revoked'`. |
+| `SessionRecord` | The persisted record (`jti`, `userId`, `createdAt`, `lastAccessedAt`, `absoluteExpiresAt`, `idleExpiresAt`, `status`, `version`, `securityVersion`, `deviceId`, `ipAddress`, `userAgent`, `metadata`, `rotatedFrom`, `familyId`, `rotatedTo`, `consumedAt`, `rotationNonceHash`). |
+| `SessionCreateInput` | `{ userId, deviceId?, ipAddress?, userAgent?, metadata?, idempotencyKey? }`. |
+| `SessionUpdatePatch` | `{ deviceId?, ipAddress?, userAgent?, metadata? }` — each `undefined` leaves the field, `null` clears it. |
+| `CreatedSession` | `{ token, session, replayed? }`. |
+| `RotatedSession` | `{ token?, session, replayed }`. |
+| `SessionInvalidReason` | `'not_found' \| 'expired' \| 'idle_timeout' \| 'absolute_timeout' \| 'revoked' \| 'invalid' \| 'binding_mismatch'`. |
+| `SessionValidationResult` | `{ valid: true, session, binding? } \| { valid: false, reason }`. |
+| `TouchOutcome` | `'touched' \| 'skipped_throttled' \| 'skipped_stale' \| 'not_found' \| 'consumed' \| 'expired' \| 'idle_expired'`. |
+| `ListOptions` | `{ limit?, offset?, includeInactive? }`. |
+| `RotateOptions` | `{ rotationNonce?, userId?, expectedVersion? }`. |
+| `TouchOptions` | `{ force?, userId? }`. |
+| `UpdateOptions` | `{ expectedVersion?, userId? }`. |
+| `ValidateOptions` | `{ userId?, ipAddress?, userAgent?, deviceId? }`. |
+| `BindingMismatch` | `{ ipAddress, userAgent, deviceId }`. |
+| `ReconcileUserResult` | `{ userId, checked, staleIndexRemoved, jtiIndexRepaired }`. |
+
+#### Envelope / serialization
+
+| Type | Description |
+|---|---|
+| `SerializedSchemaVersion` | `1 \| 2`. |
+| `PlainSessionEnvelope` | `{ v: 1, s: SessionRecord }`. |
+| `EncryptedSessionEnvelope` | AES-256-GCM envelope with plaintext header mirrors used by Lua scripts. |
+| `SessionEnvelope` | `PlainSessionEnvelope \| EncryptedSessionEnvelope`. |
+| `serializeSession` / `serializeEncryptedSession` / `deserializeSession` / `validateSessionRecord` / `envelopeKind` / `encryptedHeaderOf` / `assertHeaderMatches` | (De)serialization helpers. |
+
+#### Revocation types
+
+| Type | Description |
+|---|---|
+| `RevocationRecord` | `{ jti, expiresAt, reason? }`. |
+| `RevocationStore` | Storage-agnostic interface (`revoke`, `revokeMany`, `isRevoked`). |
+| `RedisRevocationStore` | Redis-backed implementation. |
+| `RedisRevocationStoreOptions` | `{ client, keyPrefix? }`. |
+| `RedisRevocationStoreOptionsSchema` | Zod schema. |
+| `RedisRevocationStoreOptionsInput` | Pre-default Zod input type. |
+
+#### Manager / service types
+
+| Type | Description |
+|---|---|
+| `SessionManager` | Composition root. |
+| `SessionManagerOptions` | `{ client, config?, encryptionKeyProvider?, revocationStore?, metricsAdapter?, circuitBreaker?, now? }`. |
+| `WithSessionManagerOptions` | `{ config?, encryptionKeyProvider?, metricsAdapter?, now? }` (for `client.withSession`). |
+| `SessionService` | Application-facing session API class. |
+| `SessionServiceDeps` | Service dependencies. |
+| `SessionRepository` | Low-level Redis I/O class. |
+| `SessionTokenManager` | Token + jti class. |
+| `SessionKeyStrategy` | Key layout class. |
+| `SessionMetrics` | Internal metrics facade. |
+| `SessionMetricsAdapter` | Application-provided metrics sink. |
+| `SessionCircuitBreaker` | Fail-closed breaker class. |
+| `CircuitBreakerState` | `'closed' \| 'open' \| 'half_open'`. |
+| `SessionHealthChecker` | Health check class. |
+| `SessionHealthStatus` | `{ healthy, latencyMs, errorRate, reachable, checkedAt }`. |
+| `SessionCookieManager` | Cookie helper class. |
+| `SerializeCookieOptions` | `serialize` options. |
+| `SerializedCookie` | `{ header, name, value, attributes }`. |
+| `SerializedCookieAttributes` | `{ path, domain?, httpOnly, secure, sameSite, maxAge? }`. |
+| `SessionOperation` | Operation name literal union (see §11). |
+| `SESSION_OPERATIONS` | The full list of operation names. |
+
+#### Encryption types
+
+| Type | Description |
+|---|---|
+| `SessionKeyProvider` | `{ getCurrentKey, getKey }` interface. |
+| `StaticSessionKeyProvider` | In-memory map of versions to 32-byte keys. |

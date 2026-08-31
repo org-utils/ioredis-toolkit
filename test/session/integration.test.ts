@@ -224,6 +224,67 @@ describe('session lifecycle (real Redis)', async () => {
     expect(fresh.replayed).toBe(true);
   });
 
+  gated('reconcileUser repairs a missing jti-index entry (simulated partial write)', async () => {
+    const m = freshManager(client!, PREFIX, { touchInterval: 1, jtiIndex: { enabled: true } });
+    const created = await m.service.create({ userId: 'u-11b' });
+    const jti = m.token.hash(created.token);
+
+    // Simulate the exact partial-failure scenario ยง67 describes: the
+    // session record was written successfully but its jti-index write was
+    // lost. JTI-only lookup (no userId) must now miss even though the
+    // session itself is perfectly live.
+    await client!.del(`${m.config.namespace}:jti-index:${jti}`);
+    expect(invalidReason(await m.service.validate(created.token))).toBe('not_found');
+    // userId-aware lookup remains authoritative and unaffected throughout.
+    expect((await m.service.validate(created.token, { userId: 'u-11b' })).valid).toBe(true);
+
+    const report = await m.service.reconcileUser('u-11b');
+    expect(report).toMatchObject({ userId: 'u-11b', checked: 1, jtiIndexRepaired: 1 });
+
+    // JTI-only lookup now works again, with no userId needed.
+    expect((await m.service.validate(created.token)).valid).toBe(true);
+
+    // Calling it again is idempotent: nothing left to repair.
+    const second = await m.service.reconcileUser('u-11b');
+    expect(second).toMatchObject({ jtiIndexRepaired: 0 });
+  });
+
+  gated('reconcileUser prunes stale user-index entries without touching live sessions', async () => {
+    const m = freshManager(client!, PREFIX, { touchInterval: 1 });
+    const created = await m.service.create({ userId: 'u-11c' });
+    const jti = m.token.hash(created.token);
+
+    // Corrupt storage directly: delete the session record but leave its
+    // user-index entry behind (the exact kind of drift a Redis incident or
+    // partial write can leave). Checked BEFORE any list/find call, since
+    // listByUser's own lazy self-heal would otherwise clean this up first
+    // and mask what reconcileUser itself is responsible for.
+    await client!.del(`${m.config.namespace}:session:{u-11c}:session:${jti}`);
+
+    const before = await client!.zcard(`${m.config.namespace}:user-sessions:{u-11c}`);
+    expect(before).toBe(1);
+
+    const report = await m.service.reconcileUser('u-11c');
+    expect(report).toMatchObject({ userId: 'u-11c', checked: 0, staleIndexRemoved: 1 });
+
+    const after = await client!.zcard(`${m.config.namespace}:user-sessions:{u-11c}`);
+    expect(after).toBe(0);
+  });
+
+  gated('reconcileUser never resurrects a revoked/consumed session\'s jti-index entry', async () => {
+    const m = freshManager(client!, PREFIX, { touchInterval: 1, jtiIndex: { enabled: true } });
+    const created = await m.service.create({ userId: 'u-11d' });
+    await m.service.revoke(created.token, { userId: 'u-11d' });
+
+    const report = await m.service.reconcileUser('u-11d');
+    // The revoked tombstone is a live record (checked >= 1), but its
+    // jti-index entry must NOT be (re)written: doing so would make an
+    // invalid session JTI-lookupable again, which is exactly what I5/I7
+    // forbid regardless of index state.
+    expect(report.jtiIndexRepaired).toBe(0);
+    expect(invalidReason(await m.service.validate(created.token))).toBe('not_found');
+  });
+
   gated('revocation store: revoke, check, fail-closed validation', async () => {
     const m = freshManager(
       client!,

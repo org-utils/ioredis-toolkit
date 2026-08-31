@@ -34,7 +34,6 @@ import { RateLimiter, RateLimitOptions } from "./ratelimiter.js";
 import {
   createSessionManager,
   SessionManager,
-  SessionManagerOptions,
   WithSessionManagerOptions,
 } from "./session/session-manager.js";
 import { prettifyError } from "zod";
@@ -147,19 +146,19 @@ type ClusterSlotEntry = [
 // Type Guards
 // ============================================================================
 
-function isClusterConfig(
+export function isClusterConfig(
   config: RedisConfig,
 ): config is ClusterRedisConfig {
   return config.mode === "cluster";
 }
 
-function isSentinelConfig(
+export function isSentinelConfig(
   config: RedisConfig,
 ): config is SentinelRedisConfig {
   return config.mode === "sentinel";
 }
 
-function isStandaloneConfig(
+export function isStandaloneConfig(
   config: RedisConfig,
 ): config is StandaloneRedisConfig {
   return config.mode === "standalone";
@@ -495,7 +494,6 @@ export class RedisClientWrapper {
           options.revocationStore ?? this.revocationStore,
       }
       this._session = createSessionManager(params);
-      void this._session.init()
       this.config.sessionOptions = params
 
     }

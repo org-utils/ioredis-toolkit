@@ -1,29 +1,5 @@
 # app-redis
 
-## 0.0.9
-
-### Patch Changes
-
-- e4044c8: Updated cache and types
-
-## 0.0.8
-
-### Patch Changes
-
-- aade577: authomatically init
-
-## 0.0.7
-
-### Patch Changes
-
-- 669f7a7: Refactored the code
-
-## 0.0.6
-
-### Patch Changes
-
-- 399a68e: UPdated jsdocs
-
 ## 0.0.5
 
 ### Patch Changes

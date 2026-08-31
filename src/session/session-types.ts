@@ -59,6 +59,15 @@ export type SessionRecord = {
   metadata: Record<string, unknown> | null;
   /** JTI this session was rotated from (rotation chains, reuse detection). */
   rotatedFrom: string | null;
+  /**
+   * Stable identifier for this session's rotation lineage ("family"),
+   * unchanged across every generation produced by rotate(). Equal to the
+   * first generation's own jti (unguessable, 256-bit) - no separate
+   * randomness is generated for it. Used only to detect and respond to
+   * stolen-refresh-token reuse (see rotate.lua); it is never consulted by
+   * validate() and can never by itself grant authentication (I7).
+   */
+  familyId: string;
   /** JTI this session was rotated to (enables retry-safe rotation). */
   rotatedTo: string | null;
   /** When the session was consumed by a rotation (Unix seconds), or null. */
@@ -228,6 +237,21 @@ export type BindingMismatch = {
   deviceId: boolean;
 }
 
+/**
+ * Result of a bounded {@link SessionService.reconcileUser} repair pass.
+ * `checked` is the number of live session records inspected (bounded by
+ * maxSessionsPerUserHardCap); `staleIndexRemoved` counts user-index entries
+ * removed because their session record no longer exists or was corrupt;
+ * `jtiIndexRepaired` counts global jti-index entries that were missing or
+ * stale for a live active session and were rewritten.
+ */
+export type ReconcileUserResult = {
+  userId: string;
+  checked: number;
+  staleIndexRemoved: number;
+  jtiIndexRepaired: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Serialization envelope                                                      */
 /* -------------------------------------------------------------------------- */
@@ -278,6 +302,11 @@ export type EncryptedSessionEnvelope = {
   rn: string | null;
   /** Plaintext rotated-to JTI mirror (script access). */
   rj: string | null;
+  /**
+   * Plaintext rotation-family-id mirror (script access - see rotate.lua).
+   * Immutable identity field, unchanged across rotations of one lineage.
+   */
+  fam: string;
 }
 
 export type SessionEnvelope = PlainSessionEnvelope | EncryptedSessionEnvelope;

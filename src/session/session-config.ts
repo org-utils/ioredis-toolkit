@@ -272,6 +272,25 @@ export interface SessionConfig {
    * bounded by the remaining absolute lifetime. Default: true.
    */
   retainConsumedTombstones: boolean;
+  /**
+   * On genuine reuse of an already-rotated-away (consumed) session token -
+   * not a same-nonce idempotent retry of an in-flight rotation - atomically
+   * revoke the entire rotation lineage's current active generation instead
+   * of only rejecting the replayed request. This is the strongest response
+   * to stolen refresh-token reuse (specification ยง5): if an attacker
+   * captured an old token and the legitimate client has since rotated past
+   * it, this kills the session the attacker could otherwise keep riding,
+   * rather than leaving it live while only the stale replay is rejected.
+   *
+   * Has no effect unless retainConsumedTombstones is also true: a replay
+   * can only be detected while a consumed tombstone still exists to be
+   * replayed against. Default: false (opt-in - a false positive here is a
+   * full lineage kill, so it should be turned on deliberately once the
+   * caller's retry semantics are understood; the resulting
+   * SessionReplayError with reason 'family_revoked' should be handled as
+   * a security event, e.g. forcing full re-authentication and logging).
+   */
+  revokeFamilyOnReplay: boolean;
 }
 
 export const SessionConfigSchema = z
@@ -307,6 +326,7 @@ export const SessionConfigSchema = z
     limits: SessionLimitsConfigSchema.prefault({}),
     enableCreateIdempotency: z.boolean().default(false),
     retainConsumedTombstones: z.boolean().default(true),
+    revokeFamilyOnReplay: z.boolean().default(false),
   })
   .superRefine((data, ctx) => {
     if (data.idleTimeout !== null && data.idleTimeout > data.ttl) {
@@ -321,6 +341,15 @@ export const SessionConfigSchema = z
         code: z.ZodIssueCode.custom,
         message: 'touchInterval must not exceed ttl',
         path: ['touchInterval'],
+      });
+    }
+    if (data.revokeFamilyOnReplay && !data.retainConsumedTombstones) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'revokeFamilyOnReplay requires retainConsumedTombstones: replay can only be ' +
+          'detected while a consumed tombstone still exists to be replayed against.',
+        path: ['revokeFamilyOnReplay'],
       });
     }
   });
