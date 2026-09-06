@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.13
+
+### Patch Changes
+
+- 09c266a: resolve bug
+
 ## 0.0.12
 
 ### Patch Changes
