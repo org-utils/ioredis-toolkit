@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.11
+
+### Patch Changes
+
+- bafbd94: Bump changes
+
 ## 0.5.0
 
 ### Fixed
