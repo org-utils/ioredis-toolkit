@@ -1,5 +1,5 @@
 import type { RedisClientWrapper } from '../redis/wrapper.js';
-import { SessionRotationError, SessionStorageError } from './errors.js';
+import { SessionReplayError, SessionRotationError, SessionStorageError } from './errors.js';
 import type { SessionConfig } from './config.js';
 import type { SessionKeyStrategy } from './keys.js';
 import type { SessionRecord } from './types.js';
@@ -82,7 +82,7 @@ export class SessionRepository {
   async consume(record: SessionRecord, now: number, tombstoneTtl: number): Promise<void> {
     const result = await this.o.scripts.eval('consume_session', [this.o.keys.session(record.userId, record.id)], [String(now), String(Math.max(1, tombstoneTtl))]);
     const code = Number((result as unknown[])[0]);
-    if (code === -1) throw new SessionRotationError('Session already consumed');
+    if (code === -1) throw new SessionReplayError();
     if (code !== 1) throw new SessionRotationError('Session cannot be rotated');
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
