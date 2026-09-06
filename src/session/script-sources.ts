@@ -35,12 +35,12 @@ local raw = redis.call('GET', KEYS[1])
 if not raw then return {0} end
 local ok, s = pcall(cjson.decode, raw)
 if not ok or not s.data then return {-4} end
-local r = s.data
+local r = cjson.decode(s.data)
 if r.status ~= 'active' then return {-1} end
 local now = tonumber(ARGV[1])
 if tonumber(r.expiresAt) <= now then return {-2} end
 if r.absoluteExpiresAt and r.absoluteExpiresAt ~= cjson.null and tonumber(r.absoluteExpiresAt) > 0 and tonumber(r.absoluteExpiresAt) <= now then return {-2} end
-if r.idleExpiresAt and tonumber(r.idleExpiresAt) > 0 and tonumber(r.idleExpiresAt) <= now then return {-3} end
+if r.idleExpiresAt and r.idleExpiresAt ~= cjson.null and tonumber(r.idleExpiresAt) > 0 and tonumber(r.idleExpiresAt) <= now then return {-3} end
 if now - tonumber(r.lastAccessedAt) < tonumber(ARGV[2]) then return {2} end
 local idle = tonumber(ARGV[3])
 local absolute = tonumber(ARGV[4])
@@ -48,7 +48,7 @@ if absolute > 0 and idle > absolute then idle = absolute end
 r.lastAccessedAt = now
 r.idleExpiresAt = idle > 0 and idle or cjson.null
 r.version = tonumber(r.version) + 1
-local wrapper = {v=1, data=r}
+local wrapper = {v=1, data=cjson.encode(r)}
 local encoded = cjson.encode(wrapper)
 local ttl = tonumber(r.expiresAt) - now
 if ttl <= 0 then return {-2} end
@@ -62,18 +62,18 @@ local raw = redis.call('GET', KEYS[1])
 if not raw then return {0} end
 local ok, s = pcall(cjson.decode, raw)
 if not ok or not s.data then return {-4} end
-local r = s.data
+local r = cjson.decode(s.data)
 if r.status == 'consumed' then return {-1} end
 if r.status == 'revoked' then return {-3} end
 local now = tonumber(ARGV[1])
 if tonumber(r.expiresAt) <= now then return {-2} end
 if r.absoluteExpiresAt and r.absoluteExpiresAt ~= cjson.null and tonumber(r.absoluteExpiresAt) > 0 and tonumber(r.absoluteExpiresAt) <= now then return {-2} end
-if r.idleExpiresAt and tonumber(r.idleExpiresAt) > 0 and tonumber(r.idleExpiresAt) <= now then return {-2} end
+if r.idleExpiresAt and r.idleExpiresAt ~= cjson.null and tonumber(r.idleExpiresAt) > 0 and tonumber(r.idleExpiresAt) <= now then return {-2} end
 r.status = 'consumed'
 r.consumedAt = now
 r.version = tonumber(r.version) + 1
 local ttl = tonumber(ARGV[2])
-local encoded = cjson.encode({v=1, data=r})
+local encoded = cjson.encode({v=1, data=cjson.encode(r)})
 redis.call('SET', KEYS[1], encoded, 'XX', 'EX', ttl)
 return {1, r.userId, r.jti, r.version}
 `,
@@ -84,11 +84,11 @@ local raw = redis.call('GET', KEYS[1])
 if not raw then return {0} end
 local ok, s = pcall(cjson.decode, raw)
 if not ok or not s.data then return {-4} end
-local r=s.data
+local r=cjson.decode(s.data)
 if r.status == 'revoked' then return {2} end
 r.status='revoked'; r.version=tonumber(r.version)+1
 local ttl=tonumber(ARGV[2])
-if ttl < 1 then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], cjson.encode({v=1,data=r}), 'XX', 'EX', ttl) end
+if ttl < 1 then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], cjson.encode({v=1,data=cjson.encode(r)}), 'XX', 'EX', ttl) end
 return {1}
 `,
   'update_session': `-- KEYS[1] session key
@@ -99,11 +99,13 @@ local raw = redis.call('GET', KEYS[1])
 if not raw then return {0} end
 local ok, s = pcall(cjson.decode, raw)
 if not ok or not s.data then return {-4} end
+s.data = cjson.decode(s.data)
 if s.data.status ~= 'active' then return {-3} end
 if tonumber(s.data.version) ~= tonumber(ARGV[1]) then return {-2, s.data.version} end
 local replacement = ARGV[3]
 local ok2, parsed = pcall(cjson.decode, replacement)
 if not ok2 or not parsed.data then return {-4} end
+parsed.data = cjson.decode(parsed.data)
 if parsed.data.userId ~= s.data.userId or parsed.data.jti ~= s.data.jti or parsed.data.id ~= s.data.id or parsed.data.createdAt ~= s.data.createdAt or parsed.data.absoluteExpiresAt ~= s.data.absoluteExpiresAt then return {-5} end
 local ttl = tonumber(s.data.expiresAt) - tonumber(ARGV[2])
 if ttl <= 0 then return {-1} end

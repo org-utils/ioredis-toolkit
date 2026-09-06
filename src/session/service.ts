@@ -184,5 +184,6 @@ function errorForReason(reason: Exclude<ValidationResult, { valid: true }>['reas
   if (reason === 'not_found') return new SessionNotFoundError();
   if (reason === 'expired' || reason === 'idle_timeout' || reason === 'absolute_timeout') return new SessionExpiredError();
   if (reason === 'revoked') return new SessionRevokedError();
+  if (reason === 'consumed') return new SessionReplayError();
   return new SessionInvalidError();
 }
