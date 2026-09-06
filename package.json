@@ -1,0 +1,96 @@
+{
+  "name": "ioredis-toolkit",
+  "version": "0.5.0",
+  "description": "Production-grade Redis sessions, cache, locks, rate limiting, Pub/Sub, and Streams for Node.js",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cache": {
+      "types": "./dist/cache/cache.d.ts",
+      "import": "./dist/cache/cache.js"
+    },
+    "./lock": {
+      "types": "./dist/lock/lock.d.ts",
+      "import": "./dist/lock/lock.js"
+    },
+    "./rate-limit": {
+      "types": "./dist/rate-limit/rate-limiter.d.ts",
+      "import": "./dist/rate-limit/rate-limiter.js"
+    },
+    "./pubsub": {
+      "types": "./dist/pubsub/pubsub.d.ts",
+      "import": "./dist/pubsub/pubsub.js"
+    },
+    "./streams": {
+      "types": "./dist/streams/streams.d.ts",
+      "import": "./dist/streams/streams.js"
+    },
+    "./sessions": {
+      "types": "./dist/session/manager.d.ts",
+      "import": "./dist/session/manager.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src/scripts",
+    "docs",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "author": "Anwar <anwarkamal1434@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/org-utils/ioredis-toolkit.git"
+  },
+  "homepage": "https://github.com/org-utils/ioredis-toolkit#readme",
+  "bugs": {
+    "url": "https://github.com/org-utils/ioredis-toolkit/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist",
+    "changeset:init": "changeset init",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "publish": "changeset publish",
+    "release": "bun build && changeset publish",
+    "prebuild": "bun typecheck",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "dependencies": {
+    "ioredis": "^5.6.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.2",
+    "@types/node": "^24.3.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^9.34.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.42.0",
+    "vitest": "^3.2.4"
+  },
+  "license": "MIT",
+  "sideEffects": false
+}

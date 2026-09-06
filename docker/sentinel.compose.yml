@@ -1,0 +1,14 @@
+services:
+  redis-master:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+  redis-replica:
+    image: redis:8-alpine
+    command: ["redis-server", "--replicaof", "redis-master", "6379", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    depends_on: [redis-master]
+  sentinel:
+    image: redis:8-alpine
+    depends_on: [redis-master, redis-replica]
+    command: >-
+      sh -c 'printf "port 26379\nsentinel monitor mymaster redis-master 6379 2\nsentinel down-after-milliseconds mymaster 1000\nsentinel failover-timeout mymaster 5000\nsentinel parallel-syncs mymaster 1\n" > /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf'
+    ports: ["26379:26379"]
