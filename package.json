@@ -1,6 +1,6 @@
 {
   "name": "ioredis-toolkit",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "description": "Production-grade Redis sessions, cache, locks, rate limiting, Pub/Sub, and Streams for Node.js",
   "type": "module",
   "main": "./dist/index.js",
