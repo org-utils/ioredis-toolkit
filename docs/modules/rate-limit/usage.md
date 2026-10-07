@@ -33,15 +33,7 @@ const redis = createRedisClient({
 
 ## Methods
 
-### `key(subject, nowSeconds?)`
-
-Returns the counter key for the current fixed window. Supplying `nowSeconds` makes tests deterministic.
-
-```ts
-redis.rateLimiter.key('user:42', 120); // rate-limit:user:42:2 for a 60s window
-```
-
-### `consume(subject, cost?, nowSeconds?)`
+### `consume(subject, cost?)`
 
 Atomically increments the current window and creates its TTL on the first increment.
 
@@ -58,7 +50,7 @@ Weighted costs are useful for expensive operations:
 const decision = await redis.rateLimiter.consume('user:42', 5);
 ```
 
-### `check(subject, nowSeconds?)`
+### `check(subject)`
 
 Reads the current counter without incrementing it.
 
@@ -69,7 +61,7 @@ console.log(state.remaining, state.resetAt);
 
 `check()` is advisory. A concurrent `consume()` can change the result immediately afterward.
 
-### `reset(subject, nowSeconds?)`
+### `reset(subject)`
 
 Deletes the current window counter.
 
@@ -84,9 +76,13 @@ await redis.rateLimiter.reset('user:42');
 - `allowed`: whether the operation fits within the limit.
 - `limit`: configured maximum.
 - `remaining`: remaining units, never below zero.
-- `resetAt`: estimated Unix timestamp when the current window expires.
+- `resetAt`: estimated Unix timestamp, in Redis server time, when the current window expires.
 - `retryAfterSeconds`: TTL to wait when denied, otherwise `0`.
 - `count`: current consumed units.
+
+## Clock
+
+Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. Each `consume`, `check` and `reset` therefore reads the server clock before acting, which costs one extra round trip. No method accepts a caller-supplied time. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
 
 ## Fixed-window behavior
 
