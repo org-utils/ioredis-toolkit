@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSessionConfig } from '../../src/session/config.js';
-import { parseLockConfig } from '../../src/lock/config.js';
+import { parseLockConfig, parseSessionConfig } from '../../src/index.js';
 
 describe('Session configuration', () => {
   it('defaults to disabled', () => {
