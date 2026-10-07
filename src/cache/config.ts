@@ -1,12 +1,11 @@
 import { z } from 'zod';
+import { byteCap, moduleConfigSchema } from '../redis/config-base.js';
 import type { CacheConfig } from './types.js';
 
 /** Runtime schema for cache configuration. */
-export const CacheConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  namespace: z.string().min(1).max(128).default('cache'),
+export const CacheConfigSchema = moduleConfigSchema('cache').extend({
   defaultTtl: z.number().int().positive().default(300),
-  maxValueBytes: z.number().int().positive().max(16 * 1024 * 1024).default(1024 * 1024),
+  maxValueBytes: byteCap(),
 });
 /** Validates and normalizes cache configuration. */
 export function parseCacheConfig(input: unknown): CacheConfig {

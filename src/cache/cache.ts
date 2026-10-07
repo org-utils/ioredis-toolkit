@@ -1,13 +1,15 @@
+import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
 import { CacheError, type CacheConfig, type CacheResult, type CacheSetOptions } from './types.js';
 
 /** JSON-based, namespaced Redis cache with TTL and conditional writes. */
 export class RedisCache {
+  private readonly keys: KeyStrategy;
   /** Creates a cache bound to the shared Redis client. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: CacheConfig) {}
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: CacheConfig) { this.keys = new KeyStrategy(config.namespace); }
 
   /** Builds the physical Redis key for a logical cache key. */
-  key(key: string): string { return `${this.config.namespace}:${key}`; }
+  key(key: string): string { return this.keys.key(key); }
 
   /** Reads and JSON-decodes a cached value. */
   async get<T>(key: string): Promise<CacheResult<T>> {

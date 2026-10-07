@@ -17,10 +17,13 @@ export class SessionRepository {
   /** Persists a session and its derived indexes using the repository's authoritative write semantics. */
   async create(record: SessionRecord): Promise<void> {
     const ttl = Math.max(1, Math.ceil(record.expiresAt - record.createdAt));
+    // create_session appends the token hash of each session it evicts to these two keys.
+    const evictedSessionKey = this.o.keys.sessionByTag(this.o.keys.userTag(record.userId), '');
+    const evictedTokenIndexKey = this.o.keys.tokenIndex('');
     const result = await this.o.scripts.eval(
       'create_session',
       [this.o.keys.session(record.userId, record.id), this.o.keys.userIndex(record.userId)],
-      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser), this.o.keys.getNamespace(), this.o.keys.userTag(record.userId)]
+      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser), evictedSessionKey, evictedTokenIndexKey]
     );
     const code = Number((result as unknown[])[0]);
     if (code !== 1) throw new SessionStorageError('Session creation failed');

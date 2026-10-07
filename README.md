@@ -28,8 +28,8 @@ const redis = createRedisClient({
   cache: { enabled: true, namespace: 'app:cache', defaultTtl: 300 },
   lock: { enabled: true, namespace: 'app:lock', defaultTtl: 30, maxTtl: 300 },
   rateLimit: { enabled: true, namespace: 'app:limit', windowSeconds: 60, maxRequests: 100 },
-  pubsub: { enabled: true, channelPrefix: 'app:event' },
-  streams: { enabled: true, keyPrefix: 'app:stream', maxEntries: 100_000 },
+  pubsub: { enabled: true, namespace: 'app:event' },
+  streams: { enabled: true, namespace: 'app:stream', maxEntries: 100_000 },
   sessions: { enabled: true, namespace: 'app:session' },
 });
 
@@ -50,7 +50,7 @@ redis
   .withCache({ defaultTtl: 60 })
   .withLock({ defaultTtl: 15 })
   .withRateLimit({ maxRequests: 500 })
-  .withPubSub({ channelPrefix: 'critical-events' })
+  .withPubSub({ namespace: 'critical-events' })
   .withStreams({ maxEntries: 500_000 })
   .withSessions({ idleTimeout: 60 * 60 });
 ```

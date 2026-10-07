@@ -1,16 +1,10 @@
 import { z } from "zod";
+import { byteCap, moduleConfigSchema } from "../redis/config-base.js";
 import { SessionConfigurationError } from "./errors.js";
 
 /** Runtime schema for session configuration and security invariants. */
-export const SessionConfigSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-    namespace: z
-      .string()
-      .min(1)
-      .max(128)
-      .regex(/^[A-Za-z0-9:_-]+$/)
-      .default("app"),
+export const SessionConfigSchema = moduleConfigSchema("app")
+  .extend({
     tokenBytes: z.number().int().min(32).max(128).default(32),
     ttl: z
       .number()
@@ -23,12 +17,7 @@ export const SessionConfigSchema = z
     rolling: z.boolean().default(true),
     securityVersionEnabled: z.boolean().default(false),
     maxSessionsPerUser: z.number().int().nonnegative().max(1_000).default(20),
-    maxMetadataBytes: z
-      .number()
-      .int()
-      .positive()
-      .max(64 * 1024)
-      .default(8 * 1024),
+    maxMetadataBytes: byteCap({ default: 8 * 1024, max: 64 * 1024 }),
     maxBatchSize: z.number().int().positive().max(1_000).default(200),
     maxConcurrency: z.number().int().positive().max(64).default(8),
     storeIpAddress: z.boolean().default(false),

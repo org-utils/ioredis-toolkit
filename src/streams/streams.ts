@@ -1,12 +1,14 @@
+import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
 import type { StreamEntry, StreamReadOptions, StreamsConfig } from './types.js';
 
 /** Redis Streams abstraction for append, consumer groups, reads and acknowledgements. */
 export class RedisStreams {
+  private readonly keys: KeyStrategy;
   /** Creates a Streams module bound to the shared Redis client. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: StreamsConfig) {}
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: StreamsConfig) { this.keys = new KeyStrategy(config.namespace); }
   /** Builds the physical stream key. */
-  key(name: string): string { return `${this.config.keyPrefix}:${name}`; }
+  key(name: string): string { return this.keys.key(name); }
   /** Appends a field map to a stream and optionally trims the stream length. */
   async add(name: string, fields: Record<string, string>, maxEntries = this.config.maxEntries): Promise<string> { return this.redis.xadd(this.key(name), 'MAXLEN', '~', String(maxEntries), '*', ...Object.entries(fields).flat()); }
   /** Creates a consumer group; when startId is omitted, the group starts at '$'. */

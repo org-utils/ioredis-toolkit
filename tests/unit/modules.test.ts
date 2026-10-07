@@ -7,8 +7,8 @@ describe('module configuration', () => {
     expect(client.config.cache.namespace).toBe('cache');
     expect(client.config.lock.defaultTtl).toBe(30);
     expect(client.config.rateLimit.windowSeconds).toBe(60);
-    expect(client.config.pubsub.channelPrefix).toBe('events');
-    expect(client.config.streams.keyPrefix).toBe('stream');
+    expect(client.config.pubsub.namespace).toBe('events');
+    expect(client.config.streams.namespace).toBe('stream');
     expect(client.config.sessions.enabled).toBe(false);
   });
 

@@ -6,8 +6,8 @@ export const SCRIPT_SOURCES = {
 -- ARGV[3] createdAt score
 -- ARGV[4] tokenHash
 -- ARGV[5] max sessions (0 = unlimited)
--- ARGV[6] namespace
--- ARGV[7] userTag
+-- ARGV[6] this user's session key, less the token hash
+-- ARGV[7] token index key, less the token hash
 local created = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
 if not created then return {-1} end
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
@@ -18,8 +18,8 @@ if tonumber(ARGV[5]) > 0 then
     local old = redis.call('ZRANGE', KEYS[2], 0, excess - 1)
     for _, evictedHash in ipairs(old) do
       redis.call('ZREM', KEYS[2], evictedHash)
-      redis.call('DEL', ARGV[6] .. ':session:{' .. ARGV[7] .. '}:' .. evictedHash)
-      redis.call('DEL', ARGV[6] .. ':token-index:' .. evictedHash)
+      redis.call('DEL', ARGV[6] .. evictedHash)
+      redis.call('DEL', ARGV[7] .. evictedHash)
     end
     return {1, excess}
   end

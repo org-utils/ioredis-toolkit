@@ -1,9 +1,7 @@
+import type { ModuleConfigBase } from '../redis/config-base.js';
+
 /** Normalized configuration for the fixed-window rate limiter. */
-export interface RateLimitConfig {
-  /** Whether the application has enabled the module. The class remains directly constructible when false; {@link RedisClient}'s `rateLimiter` getter throws when disabled. */
-  enabled: boolean;
-  /** Prefix used for counter keys. */
-  namespace: string;
+export interface RateLimitConfig extends ModuleConfigBase {
   /** Length of each fixed window in seconds. */
   windowSeconds: number;
   /** Maximum consumed units permitted during one window. */

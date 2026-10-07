@@ -29,7 +29,7 @@ The module uses the same Redis connection as the rest of the package. Do not cre
 | Option | Type | Default | Description |
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the module. `redis.cache` throws `RedisConfigurationError` while disabled; `new RedisCache(...)` remains directly constructible either way. |
-| `namespace` | `string` | `cache` | Prefix placed before every cache key. |
+| `namespace` | `string` | `cache` | Namespace: the first segment of every cache key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `defaultTtl` | `number` | `300` | Default TTL in seconds. |
 | `maxValueBytes` | `number` | `1048576` | Maximum UTF-8 encoded JSON size. |
 

@@ -1,14 +1,12 @@
+import type { ModuleConfigBase } from '../redis/config-base.js';
+
 /** Thrown when a cached value cannot be decoded, or when the module is used while disabled. */
 export class CacheError extends Error {
   constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'CacheError'; }
 }
 
 /** Normalized configuration for {@link RedisCache}. */
-export interface CacheConfig {
-  /** Whether the application has enabled the module. The class remains directly constructible when false; {@link RedisClient}'s `cache` getter throws when disabled. */
-  enabled: boolean;
-  /** Prefix used for every physical cache key. */
-  namespace: string;
+export interface CacheConfig extends ModuleConfigBase {
   /** TTL in seconds used when a write does not provide an explicit TTL. */
   defaultTtl: number;
   /** Maximum UTF-8 encoded JSON payload size accepted by a write. */

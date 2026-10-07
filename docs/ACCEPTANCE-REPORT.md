@@ -62,7 +62,7 @@ redis
   .withCache({ defaultTtl: 60 })
   .withLock({ defaultTtl: 15 })
   .withRateLimit({ maxRequests: 500 })
-  .withPubSub({ channelPrefix: 'critical' })
+  .withPubSub({ namespace: 'critical' })
   .withStreams({ maxEntries: 500_000 })
   .withSessions({ idleTimeout: 3600 });
 ```
