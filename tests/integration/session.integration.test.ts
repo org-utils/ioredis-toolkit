@@ -95,13 +95,14 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     expect(await redis.keysUnder(elsewhere)).toHaveLength(0);
   });
 
-  it("keeps one user's keys in a single hash slot", async () => {
+  it("keeps one user's keys in a single hash slot chosen by the user", async () => {
     /** A namespace's keys split by whether they carry a hash tag; a key found by credential alone carries none. */
     async function keysByTag(namespace: string): Promise<{ tagged: string[]; untagged: string[] }> {
       const keys = await redis.keysUnder(namespace);
       // A user id cannot choose its own hash tag.
       expect(keys.join('\n')).not.toContain('evil');
-      return { tagged: keys.filter(key => /\{[a-f0-9]{64}\}/.test(key)), untagged: keys.filter(key => !/\{[a-f0-9]{64}\}/.test(key)) };
+      const hashTag = /\{[a-f0-9]{64}\}/;
+      return { tagged: keys.filter(key => hashTag.test(key)), untagged: keys.filter(key => !hashTag.test(key)) };
     }
 
     const namespace = redis.newNamespace();

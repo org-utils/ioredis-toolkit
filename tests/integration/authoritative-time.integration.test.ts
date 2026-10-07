@@ -3,7 +3,7 @@ import { connectClient, eventually, redisFixture, redisUrl } from '../support/re
 
 const DAY_MS = 86_400_000;
 
-/** Moves this process's wall clock, as a host whose clock is wrong would see it. */
+/** Skews this process's local clock as read through `Date.now()`, the way a host whose clock is wrong would see it. */
 function skewLocalClock(byMs: number): void {
   const accurate = Date.now.bind(Date);
   vi.spyOn(Date, 'now').mockImplementation(() => accurate() + byMs);
@@ -63,7 +63,7 @@ describe.skipIf(!redisUrl)('authoritative time against real Redis', () => {
   });
 
   describe('sessions', () => {
-    function sessionsWith(lifetime: { ttl: number; idleTimeout?: number }) {
+    function sessionsWith(lifetime: { ttl: number; idleTimeout?: number; touchInterval?: number }) {
       return connectClient({ sessions: { enabled: true, namespace: redis.newNamespace(), ...lifetime } }).sessions;
     }
 
@@ -81,6 +81,22 @@ describe.skipIf(!redisUrl)('authoritative time against real Redis', () => {
       const { token } = await sessions.create({ userId: 'integration-user' });
       skewLocalClock(2 * DAY_MS);
       expect((await sessions.validate(token)).valid).toBe(true);
+    });
+
+    it('extends and rotates a session in server time on a host whose local clock is wrong', async () => {
+      const sessions = sessionsWith({ ttl: 60, idleTimeout: 30, touchInterval: 0 });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+      skewLocalClock(2 * DAY_MS);
+
+      const before = await serverSeconds();
+      await sessions.touch(token);
+      const touched = await sessions.get(token);
+      expect(touched.lastAccessedAt).toBeGreaterThanOrEqual(before);
+      expect(touched.idleExpiresAt).toBeLessThanOrEqual((await serverSeconds()) + 30);
+
+      const { session: successor } = await sessions.rotate(token);
+      expect(successor.createdAt).toBeGreaterThanOrEqual(before);
+      expect(successor.createdAt).toBeLessThanOrEqual(await serverSeconds());
     });
 
     it('does not keep an idle session alive when the local clock falls behind', async () => {

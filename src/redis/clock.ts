@@ -10,7 +10,7 @@ export class RedisClock {
   constructor(private readonly redis: Pick<RedisCommandClient, 'time'>) {}
 
   /** Returns Redis server time in whole Unix seconds. */
-  async now(): Promise<number> {
+  async serverSeconds(): Promise<number> {
     const [seconds] = await this.redis.time();
     return Number(seconds);
   }

@@ -33,6 +33,14 @@ const redis = createRedisClient({
 
 ## Methods
 
+### `key(subject, serverSeconds)`
+
+Returns the counter key for the fixed window containing `serverSeconds`. Pass Redis server time to get the key the limiter itself uses.
+
+```ts
+redis.rateLimiter.key('user:42', 120); // rate-limit:user:42:2 for a 60s window
+```
+
 ### `consume(subject, cost?)`
 
 Atomically increments the current window and creates its TTL on the first increment.
@@ -82,7 +90,7 @@ await redis.rateLimiter.reset('user:42');
 
 ## Clock
 
-Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. Each `consume`, `check` and `reset` therefore reads the server clock before acting, which costs one extra round trip. No method accepts a caller-supplied time. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
+Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. Each `consume`, `check` and `reset` therefore reads the server clock before acting, which costs one extra round trip, and none of them accepts a caller-supplied time. On Redis Cluster the clock is that of whichever node answers, so the nodes' own clocks must be kept in sync. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
 
 ## Fixed-window behavior
 

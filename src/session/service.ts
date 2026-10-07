@@ -174,7 +174,7 @@ export class SessionService {
   }
 
   private async now(): Promise<number> {
-    try { return await this.clock.now(); }
+    try { return await this.clock.serverSeconds(); }
     catch (error) { throw new SessionStorageError('Redis time unavailable', error); }
   }
 }
