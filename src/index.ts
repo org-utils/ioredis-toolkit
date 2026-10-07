@@ -1,7 +1,7 @@
 export { createRedisConnection } from './redis/client.js';
 export { RedisClientWrapper } from './redis/wrapper.js';
-export { createRedisClient, RedisClient } from './redis/client-facade.js';
-export type { RedisClientConfig, RedisClientDependencies } from './redis/client-facade.js';
+export { createRedisClient, RedisClient } from './client-facade.js';
+export type { RedisClientConfig, RedisClientDependencies } from './client-facade.js';
 export { redisHashSlot, safeUserTag, assertSameSlot } from './redis/cluster.js';
 export { parseRedisConnectionConfig, RedisConnectionConfigSchema } from './redis/config.js';
 export { RedisConfigurationError } from './redis/errors.js';

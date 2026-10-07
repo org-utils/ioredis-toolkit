@@ -19,7 +19,7 @@ A thin module over the kernel offering a common Redis pattern with no domain log
 _Avoid_: peer module, sub-package, helper module
 
 **Client facade**:
-The single composition root that wires the kernel to the modules and hands the consumer a configured client. Lives above the kernel, never inside it, so that the dependency graph stays a star with the kernel as its sink.
+The single composition root that wires the kernel to the modules and hands the consumer a configured client. Lives in `src/client-facade.ts`, above the kernel and never inside it, so that the dependency graph stays a star with the kernel as its sink.
 _Avoid_: registry, container, factory (a factory builds one thing; the facade wires everything)
 
 ### The public boundary
