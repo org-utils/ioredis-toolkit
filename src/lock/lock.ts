@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
 import type { LockAcquireResult, LockConfig } from './types.js';
 
@@ -7,11 +8,12 @@ const EXTEND = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call(
 
 /** Redis distributed lock using an ownership token and compare-and-delete semantics. */
 export class RedisLock {
+  private readonly keys: KeyStrategy;
   /** Creates a lock bound to the shared Redis client. The client must be shared with the other modules. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: LockConfig) {}
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: LockConfig) { this.keys = new KeyStrategy(config.namespace); }
 
   /** Builds the physical key for a logical lock name. */
-  key(name: string): string { return `${this.config.namespace}:${name}`; }
+  key(name: string): string { return this.keys.key(name); }
 
   /** Attempts to acquire a lock and returns a cryptographically random ownership token. */
   async acquire(name: string, ttl = this.config.defaultTtl): Promise<LockAcquireResult> {

@@ -1,9 +1,7 @@
+import type { ModuleConfigBase } from '../redis/config-base.js';
+
 /** Normalized configuration for {@link RedisStreams}. */
-export interface StreamsConfig {
-  /** Whether the application has enabled the module. The class remains directly constructible when false; {@link RedisClient}'s `streams` getter throws when disabled. */
-  enabled: boolean;
-  /** Prefix used for physical stream keys. */
-  keyPrefix: string;
+export interface StreamsConfig extends ModuleConfigBase {
   /** Approximate number of entries retained by the default `add()` trim operation. */
   maxEntries: number;
   /** Default configured blocking duration in milliseconds for application policy. */

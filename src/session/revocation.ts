@@ -18,12 +18,12 @@ export class RedisRevocationStore {
   async revoke(jti: string, now: number, expiresAt: number, reason = 'revoked'): Promise<void> {
     const ttl = Math.ceil(expiresAt - now);
     if (ttl <= 0) return;
-    try { await this.redis.set(`${this.keys.getNamespace()}:revoked:${jti}`, reason, 'EX', String(ttl), 'NX'); }
+    try { await this.redis.set(this.keys.revoked(jti), reason, 'EX', String(ttl), 'NX'); }
     catch (error) { throw new SessionStorageError('Unable to persist revocation', error); }
   }
   /** Checks whether a JTI currently has a revocation tombstone. */
   async isRevoked(jti: string): Promise<boolean> {
-    try { return (await this.redis.exists(`${this.keys.getNamespace()}:revoked:${jti}`)) === 1; }
+    try { return (await this.redis.exists(this.keys.revoked(jti))) === 1; }
     catch (error) { throw new SessionStorageError('Unable to read revocation state', error); }
   }
 }

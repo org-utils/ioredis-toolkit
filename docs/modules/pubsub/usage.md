@@ -11,7 +11,7 @@ const redis = createRedisClient({
   mode: 'standalone',
   host: '127.0.0.1',
   port: 6379,
-  pubsub: { enabled: true, channelPrefix: 'myapp:events', maxMessageBytes: 1024 * 1024 },
+  pubsub: { enabled: true, namespace: 'myapp:events', maxMessageBytes: 1024 * 1024 },
 });
 ```
 
@@ -22,7 +22,7 @@ const redis = createRedisClient({
 | Option | Type | Default | Description |
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the module. `redis.pubsub` throws `RedisConfigurationError` while disabled; `new RedisPubSub(...)` remains directly constructible either way. |
-| `channelPrefix` | `string` | `events` | Physical channel prefix. |
+| `namespace` | `string` | `events` | Namespace: the first segment of every channel name. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `maxMessageBytes` | `number` | `1048576` | Maximum encoded JSON message size. |
 
 ## Resilience
@@ -99,7 +99,7 @@ Use Pub/Sub when losing messages while nobody is listening is acceptable and low
 ## Overrides
 
 ```ts
-redis.withPubSub({ channelPrefix: 'critical' });
+redis.withPubSub({ namespace: 'critical' });
 redis.withPubSub({ maxMessageBytes: 256 * 1024 }, 'replace');
 ```
 

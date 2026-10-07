@@ -95,6 +95,21 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     expect(await redis.keysUnder(elsewhere)).toHaveLength(0);
   });
 
+  it('leaves no key behind for a session evicted by maxSessionsPerUser', async () => {
+    const namespace = redis.newNamespace();
+    const sessions = sessionsIn(namespace, { maxSessionsPerUser: 1 });
+    const created = [await sessions.create({ userId: 'integration-user' }), await sessions.create({ userId: 'integration-user' })];
+
+    // Two sessions made in the same server second tie for oldest, so either may be the one evicted.
+    const valid = [];
+    for (const { token } of created) valid.push((await sessions.validate(token)).valid);
+    expect(valid.filter(Boolean)).toHaveLength(1);
+    const evicted = created[valid.indexOf(false)]!;
+    expect(await sessions.validate(evicted.token)).toEqual({ valid: false, reason: 'not_found' });
+    // The session id names the evicted record and its locator, and is its member in the user's index.
+    expect(await redis.storedUnder(namespace)).not.toContain(evicted.session.id);
+  });
+
   it("keeps one user's keys in a single hash slot chosen by the user", async () => {
     /** A namespace's keys split by whether they carry a hash tag; a key found by credential alone carries none. */
     async function keysByTag(namespace: string): Promise<{ tagged: string[]; untagged: string[] }> {

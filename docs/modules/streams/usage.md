@@ -11,7 +11,7 @@ const redis = createRedisClient({
   mode: 'standalone',
   host: '127.0.0.1',
   port: 6379,
-  streams: { enabled: true, keyPrefix: 'myapp:stream', maxEntries: 100_000, blockMs: 5_000 },
+  streams: { enabled: true, namespace: 'myapp:stream', maxEntries: 100_000, blockMs: 5_000 },
 });
 ```
 
@@ -22,7 +22,7 @@ const redis = createRedisClient({
 | Option | Type | Default | Description |
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the module. `redis.streams` throws `RedisConfigurationError` while disabled; `new RedisStreams(...)` remains directly constructible either way. |
-| `keyPrefix` | `string` | `stream` | Physical stream prefix. |
+| `namespace` | `string` | `stream` | Namespace: the first segment of every stream key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `maxEntries` | `number` | `100000` | Approximate retained entry limit used by `add()`. |
 | `blockMs` | `number` | `5000` | Default blocking duration applied to `read()` whenever a call does not pass its own `blockMs`. |
 
@@ -137,5 +137,5 @@ Consumer groups create pending-entry state. Production consumers should also imp
 
 ```ts
 redis.withStreams({ maxEntries: 500_000, blockMs: 10_000 });
-redis.withStreams({ keyPrefix: 'critical-streams' }, 'replace');
+redis.withStreams({ namespace: 'critical-streams' }, 'replace');
 ```

@@ -45,7 +45,7 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | Option | Type | Default | Description |
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the session subsystem. |
-| `namespace` | `string` | `app` | Session key namespace. |
+| `namespace` | `string` | `app` | Namespace: the first segment of every session key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `tokenBytes` | `number` | `32` | Random secret bytes; minimum 32 (256 bits). |
 | `ttl` | `number` | 30 days | Hard Redis/session lifetime in seconds. |
 | `idleTimeout` | `number` | unset | Optional rolling inactivity lifetime. |

@@ -26,9 +26,9 @@ describe.skipIf(!redisUrl)('convenience wrappers against real Redis', () => {
   });
 
   it('writes a stream under the streams namespace', async () => {
-    const keyPrefix = redis.newNamespace();
-    await connectClient({ streams: { enabled: true, keyPrefix } }).streams.add('a', { k: 'v' });
-    expect(await redis.keysUnder(keyPrefix)).toEqual([`${keyPrefix}:a`]);
+    const namespace = redis.newNamespace();
+    await connectClient({ streams: { enabled: true, namespace } }).streams.add('a', { k: 'v' });
+    expect(await redis.keysUnder(namespace)).toEqual([`${namespace}:a`]);
   });
 
   it('throws a typed CacheError instead of crashing on a malformed cached value', async () => {

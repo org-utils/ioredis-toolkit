@@ -1,4 +1,5 @@
 import { Cluster, type Redis } from 'ioredis';
+import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
 import type { PubSubConfig, PubSubMessage, Subscription } from './types.js';
 
@@ -6,8 +7,10 @@ import type { PubSubConfig, PubSubMessage, Subscription } from './types.js';
 export class RedisPubSub {
   private readonly subscriber: Redis | Cluster;
   private readonly handlers = new Map<string, Set<(message: string) => void>>();
+  private readonly keys: KeyStrategy;
   /** Creates a Pub/Sub module using the same connection configuration as the shared client. */
   constructor(private readonly redis: RedisClientWrapper, private readonly config: PubSubConfig) {
+    this.keys = new KeyStrategy(config.namespace);
     this.subscriber = redis.duplicateConnection();
     this.subscriber.on('error', () => { /* prevents unhandled 'error' event crashes; add your own listener on this instance for observability */ });
     this.subscriber.on('message', (channel: string, message: string) => this.handlers.get(channel)?.forEach(handler => handler(message)));
@@ -35,5 +38,5 @@ export class RedisPubSub {
   /** Closes the dedicated subscriber connection. */
   async close(): Promise<void> { await this.subscriber.quit(); this.handlers.clear(); }
   /** Returns the physical namespaced channel. */
-  fullChannel(channel: string): string { return `${this.config.channelPrefix}:${channel}`; }
+  fullChannel(channel: string): string { return this.keys.key(channel); }
 }

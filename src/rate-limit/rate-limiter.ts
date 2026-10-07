@@ -1,4 +1,5 @@
 import { RedisClock } from '../redis/clock.js';
+import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
 import type { RateLimitConfig, RateLimitResult } from './types.js';
 
@@ -7,11 +8,12 @@ const SCRIPT = `local c=redis.call('INCRBY',KEYS[1],ARGV[2]); if c==1 then redis
 /** Fixed-window Redis rate limiter with atomic increment-and-expire behavior. */
 export class RedisRateLimiter {
   private readonly clock: RedisClock;
+  private readonly keys: KeyStrategy;
   /** Creates a rate limiter bound to the shared Redis client. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: RateLimitConfig) { this.clock = new RedisClock(redis); }
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: RateLimitConfig) { this.clock = new RedisClock(redis); this.keys = new KeyStrategy(config.namespace); }
 
   /** Builds the physical key for a subject and the fixed window containing `serverSeconds`, which must be Redis server time to name the window the limiter uses. */
-  key(subject: string, serverSeconds: number): string { return `${this.config.namespace}:${subject}:${Math.floor(serverSeconds / this.config.windowSeconds)}`; }
+  key(subject: string, serverSeconds: number): string { return this.keys.key(subject, String(Math.floor(serverSeconds / this.config.windowSeconds))); }
 
   /** Consumes one request from the configured fixed window. */
   async consume(subject: string, cost = 1): Promise<RateLimitResult> {
