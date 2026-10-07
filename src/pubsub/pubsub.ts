@@ -1,7 +1,7 @@
 import { Cluster, type Redis } from 'ioredis';
 import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
-import type { PubSubConfig, PubSubMessage, Subscription } from './types.js';
+import { PubSubError, type PubSubConfig, type PubSubMessage, type Subscription } from './types.js';
 
 /** JSON Pub/Sub abstraction using a dedicated subscriber connection. */
 export class RedisPubSub {
@@ -17,9 +17,11 @@ export class RedisPubSub {
   }
   /** Publishes a JSON value to a namespaced channel and returns subscriber count. */
   async publish<T>(channel: string, value: T): Promise<number> {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new TypeError('Pub/Sub values must be JSON-serializable');
-    if (Buffer.byteLength(encoded, 'utf8') > this.config.maxMessageBytes) throw new RangeError('Pub/Sub message exceeds maxMessageBytes');
+    let encoded: string | undefined;
+    try { encoded = JSON.stringify(value); }
+    catch (error) { throw new PubSubError('PUBSUB_SERIALIZATION', 'Pub/Sub values must be JSON-serializable', { cause: error }); }
+    if (encoded === undefined) throw new PubSubError('PUBSUB_SERIALIZATION', 'Pub/Sub values must be JSON-serializable');
+    if (Buffer.byteLength(encoded, 'utf8') > this.config.maxMessageBytes) throw new PubSubError('PUBSUB_LIMIT', 'Pub/Sub message exceeds maxMessageBytes');
     return this.redis.publish(this.fullChannel(channel), encoded);
   }
   /** Subscribes to a namespaced channel and parses each JSON message. */

@@ -26,7 +26,7 @@ const redis = createRedisClient({
 | `defaultTtl` | `number` | `30` | Default lease in seconds. Must not exceed `maxTtl`. |
 | `maxTtl` | `number` | `300` | Maximum permitted lease. |
 
-`parseLockConfig()` rejects a configuration where `defaultTtl > maxTtl` at config-parse time, instead of letting every `acquire()`/`extend()` call using the default TTL throw a `RangeError` later.
+`parseLockConfig()` rejects a configuration where `defaultTtl > maxTtl` at config-parse time, instead of letting every `acquire()`/`extend()` call using the default TTL throw later.
 
 ## Methods
 
@@ -89,13 +89,24 @@ const result = await redis.lock.using('report:daily', async token => {
 }, 60);
 ```
 
-If acquisition fails, `using()` throws instead of executing the callback.
+If acquisition fails, `using()` throws a `LockError` with code `LOCK_HELD` instead of executing the callback.
 
 ## Important semantics
 
 This is a lease, not a consensus protocol. If the process pauses longer than the TTL, another owner may acquire the lock. Choose TTLs that safely cover the critical section and extend them when necessary.
 
 Do not use the lock as proof that a database transaction committed. Prefer fencing tokens when an external resource requires strict stale-writer protection.
+
+## Errors
+
+Every error this module raises itself is a `LockError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+
+| Code | Thrown when |
+|---|---|
+| `LOCK_CONFIGURATION` | the lock configuration is invalid |
+| `LOCK_INPUT` | `acquire()` or `extend()` is given a TTL that is not positive |
+| `LOCK_LIMIT` | `acquire()` or `extend()` is given a TTL longer than `maxTtl` |
+| `LOCK_HELD` | `using()` finds the lock already held |
 
 ## Overrides
 

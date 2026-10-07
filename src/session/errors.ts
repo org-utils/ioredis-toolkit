@@ -1,3 +1,5 @@
+import { RedisToolkitError } from '../redis/errors.js';
+
 /** Stable machine-readable error codes emitted by the session subsystem. */
 export type SessionErrorCode =
   | 'SESSION_NOT_FOUND' | 'SESSION_EXPIRED' | 'SESSION_REVOKED' | 'SESSION_INVALID'
@@ -5,9 +7,10 @@ export type SessionErrorCode =
   | 'SESSION_SERIALIZATION' | 'SESSION_CONFIGURATION' | 'SESSION_INPUT' | 'SESSION_LIMIT';
 
 /** Base typed error for session validation, lifecycle, storage, and configuration failures. */
-export class SessionError extends Error {
-  constructor(public readonly code: SessionErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options); this.name = 'SessionError';
+export class SessionError extends RedisToolkitError {
+  declare readonly code: SessionErrorCode;
+  constructor(code: SessionErrorCode, message: string, options?: ErrorOptions) {
+    super(code, message, options); this.name = 'SessionError';
   }
 }
 /** Thrown when an authoritative session record cannot be found. */

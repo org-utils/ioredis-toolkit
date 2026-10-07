@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
-import type { LockAcquireResult, LockConfig } from './types.js';
+import { LockError, type LockAcquireResult, type LockConfig } from './types.js';
 
 const RELEASE = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
 const EXTEND = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end`;
@@ -17,7 +17,7 @@ export class RedisLock {
 
   /** Attempts to acquire a lock and returns a cryptographically random ownership token. */
   async acquire(name: string, ttl = this.config.defaultTtl): Promise<LockAcquireResult> {
-    if (ttl <= 0 || ttl > this.config.maxTtl) throw new RangeError('Lock TTL is outside the configured bounds');
+    this.assertTtl(ttl);
     const token = randomBytes(32).toString('base64url');
     const result = await this.redis.set(this.key(name), token, 'PX', String(ttl * 1000), 'NX');
     return { acquired: result === 'OK', token };
@@ -28,14 +28,20 @@ export class RedisLock {
 
   /** Extends a lock only when the supplied ownership token still owns it. */
   async extend(name: string, token: string, ttl = this.config.defaultTtl): Promise<boolean> {
-    if (ttl <= 0 || ttl > this.config.maxTtl) throw new RangeError('Lock TTL is outside the configured bounds');
+    this.assertTtl(ttl);
     return Number(await this.redis.eval(EXTEND, 1, this.key(name), token, String(ttl * 1000))) === 1;
   }
 
   /** Executes a function while holding a lock, releasing it in a finally block. */
   async using<T>(name: string, fn: (token: string) => Promise<T>, ttl = this.config.defaultTtl): Promise<T> {
     const acquired = await this.acquire(name, ttl);
-    if (!acquired.acquired) throw new Error(`Lock is already held: ${name}`);
+    if (!acquired.acquired) throw new LockError('LOCK_HELD', `Lock is already held: ${name}`);
     try { return await fn(acquired.token); } finally { await this.release(name, acquired.token); }
+  }
+
+  /** Rejects a lease that is not positive or is longer than the configured maximum. */
+  private assertTtl(ttl: number): void {
+    if (ttl <= 0) throw new LockError('LOCK_INPUT', 'Lock TTL must be positive');
+    if (ttl > this.config.maxTtl) throw new LockError('LOCK_LIMIT', `Lock TTL must not exceed maxTtl (${this.config.maxTtl})`);
   }
 }

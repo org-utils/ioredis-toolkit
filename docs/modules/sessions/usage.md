@@ -230,7 +230,7 @@ Never log raw session tokens. Do not put them into metrics labels, traces, excep
 
 ## Errors
 
-All typed errors extend `SessionError` and carry a stable `code`:
+All typed errors extend `SessionError`, which extends the package-wide `RedisToolkitError`, and carry a stable `code`:
 
 | Class | Code | Thrown by |
 |---|---|---|
@@ -245,6 +245,7 @@ All typed errors extend `SessionError` and carry a stable `code`:
 | `SessionStorageError` | `SESSION_STORAGE` | Redis-level read/write failures |
 | `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read |
 | `SessionConfigurationError` | `SESSION_CONFIGURATION` | invalid session configuration, or constructing the manager while `enabled: false` |
+| `SessionInputError` | `SESSION_INPUT` | `serializeCookie()`/`serializeDeletionCookie()` given an invalid cookie name, or `SameSite=None` without `Secure` |
 
 `validate()` never throws for ordinary invalid-credential conditions — see the discriminated result above. These errors surface from `get()` and the other exception-based methods.
 

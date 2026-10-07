@@ -6,7 +6,7 @@ The project separates deterministic unit/security tests from real Redis tests.
 
 1. TypeScript strict typecheck.
 2. ESLint.
-3. Unit tests for token generation, hashing, key hashing, serializer, configuration, cookie serialization, and Pub/Sub message/error handling (connection error resilience, malformed-message dropping, subscribe/unsubscribe deduplication).
+3. Unit tests for token generation, hashing, key hashing, serializer, configuration, cookie serialization, error codes, and Pub/Sub message/error handling (connection error resilience, malformed-message dropping, subscribe/unsubscribe deduplication).
 4. Security tests ensuring no raw-token persistence is part of the repository contract and invalid credentials fail closed.
 5. Concurrency tests against real Redis for simultaneous touch, update, rotate, revoke, and max-session operations.
 6. Standalone integration tests.

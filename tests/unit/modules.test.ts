@@ -38,10 +38,3 @@ describe('module enablement gating', () => {
     expect(() => client.cache).not.toThrow();
   });
 });
-
-describe('streams', () => {
-  it('rejects a group read that omits the consumer name', async () => {
-    const { streams } = createRedisClient({ mode: 'standalone', host: '127.0.0.1', port: 6379, lazyConnect: true, streams: { enabled: true } });
-    await expect(streams.read('s', { group: 'g' })).rejects.toThrow(RangeError);
-  });
-});

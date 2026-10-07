@@ -96,6 +96,16 @@ process.on('SIGTERM', async () => {
 
 Use Pub/Sub when losing messages while nobody is listening is acceptable and low-latency fan-out is the priority. Use Streams when messages need persistence, consumer groups, acknowledgements, replay, or controlled processing.
 
+## Errors
+
+Every error this module raises itself is a `PubSubError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+
+| Code | Thrown when |
+|---|---|
+| `PUBSUB_CONFIGURATION` | the Pub/Sub configuration is invalid |
+| `PUBSUB_SERIALIZATION` | `publish()` is given a value JSON cannot represent |
+| `PUBSUB_LIMIT` | the encoded message exceeds `maxMessageBytes` |
+
 ## Overrides
 
 ```ts

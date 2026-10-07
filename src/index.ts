@@ -4,7 +4,7 @@ export { createRedisClient, RedisClient } from './client-facade.js';
 export type { RedisClientConfig, RedisClientDependencies } from './client-facade.js';
 export { redisHashSlot, safeUserTag, assertSameSlot } from './redis/cluster.js';
 export { parseRedisConnectionConfig, RedisConnectionConfigSchema } from './redis/config.js';
-export { RedisConfigurationError } from './redis/errors.js';
+export { RedisToolkitError, RedisConfigurationError } from './redis/errors.js';
 export type { RedisConfig, RedisMode, RedisConnection, RedisCommandClient } from './redis/types.js';
 
 export { createSessionManager, createSessionManagerFromRedis } from './session/factory.js';
@@ -28,22 +28,26 @@ export * from './session/errors.js';
 export { RedisCache } from './cache/cache.js';
 export { parseCacheConfig, CacheConfigSchema } from './cache/config.js';
 export { CacheError } from './cache/types.js';
-export type { CacheConfig, CacheSetOptions, CacheResult } from './cache/types.js';
+export type { CacheConfig, CacheSetOptions, CacheResult, CacheErrorCode } from './cache/types.js';
 
 export { RedisLock } from './lock/lock.js';
 export { parseLockConfig, LockConfigSchema } from './lock/config.js';
-export type { LockConfig, LockAcquireResult } from './lock/types.js';
+export { LockError } from './lock/types.js';
+export type { LockConfig, LockAcquireResult, LockErrorCode } from './lock/types.js';
 
 export { RedisRateLimiter } from './rate-limit/rate-limiter.js';
 export { parseRateLimitConfig, RateLimitConfigSchema } from './rate-limit/config.js';
-export type { RateLimitConfig, RateLimitResult } from './rate-limit/types.js';
+export { RateLimitError } from './rate-limit/types.js';
+export type { RateLimitConfig, RateLimitResult, RateLimitErrorCode } from './rate-limit/types.js';
 
 export { RedisPubSub } from './pubsub/pubsub.js';
 export { parsePubSubConfig, PubSubConfigSchema } from './pubsub/config.js';
-export type { PubSubConfig, PubSubMessage, Subscription } from './pubsub/types.js';
+export { PubSubError } from './pubsub/types.js';
+export type { PubSubConfig, PubSubMessage, Subscription, PubSubErrorCode } from './pubsub/types.js';
 
 export { RedisStreams } from './streams/streams.js';
 export { parseStreamsConfig, StreamsConfigSchema } from './streams/config.js';
-export type { StreamsConfig, StreamEntry, StreamReadOptions } from './streams/types.js';
+export { StreamsError } from './streams/types.js';
+export type { StreamsConfig, StreamEntry, StreamReadOptions, StreamsErrorCode } from './streams/types.js';
 
 export type { ModuleConfigMode } from './modules-config.js';

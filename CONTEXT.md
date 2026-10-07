@@ -25,7 +25,7 @@ _Avoid_: registry, container, factory (a factory builds one thing; the facade wi
 ### The public boundary
 
 **Public surface**:
-The set of names a consumer is entitled to hold: module classes, their config/input/result types, the `Session*Error` hierarchy, the factory functions, and the `parse*Config` functions. Everything else is internal, including every class that a facade constructs on the consumer's behalf and every validation schema object.
+The set of names a consumer is entitled to hold: module classes, their config/input/result types, the error hierarchy (the `RedisToolkitError` base, the `Session*Error` classes, each convenience wrapper's error, and their code unions), the factory functions, and the `parse*Config` functions. Everything else is internal, including every class that a facade constructs on the consumer's behalf and every validation schema object.
 _Avoid_: API, exports (both describe the mechanism, not the entitlement)
 
 **Internal**:

@@ -1,7 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { createSessionManagerFromRedis, SessionSerializationError } from '../../src/index.js';
-import type { KeyManager, SessionConfig, SessionManager } from '../../src/index.js';
+import {
+  createSessionManagerFromRedis,
+  SessionConflictError, SessionExpiredError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError,
+} from '../../src/index.js';
+import type { KeyManager, SessionConfig, SessionManager, SessionMetrics } from '../../src/index.js';
+import { unknownCredential } from '../support/credential.js';
+import { expectPackageError } from '../support/errors.js';
 import { hashSlot } from '../support/hash-slot.js';
 import { connectClient, connectionConfig, redisFixture, redisUrl } from '../support/redis.js';
 
@@ -154,7 +159,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
       const sessions = sessionsIn(namespace);
       const created = await sessions.create({ userId: 'integration-user' });
       await redis.observer.set(await envelopeKey(namespace), JSON.stringify({ v: 2, data: JSON.stringify(created.session) }), 'KEEPTTL');
-      await expect(sessions.validate(created.token)).rejects.toThrow(SessionSerializationError);
+      await expectPackageError(() => sessions.validate(created.token), SessionSerializationError, 'SESSION_SERIALIZATION');
     });
 
     it('round-trips an encrypted record and keeps it unreadable in Redis', async () => {
@@ -173,7 +178,55 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
       const envelope = JSON.parse((await redis.observer.get(key))!) as { data: string };
       const tampered = (envelope.data.startsWith('A') ? 'B' : 'A') + envelope.data.slice(1);
       await redis.observer.set(key, JSON.stringify({ ...envelope, data: tampered }), 'KEEPTTL');
-      await expect(sessions.validate(created.token)).rejects.toThrow(SessionSerializationError);
+      await expectPackageError(() => sessions.validate(created.token), SessionSerializationError, 'SESSION_SERIALIZATION');
+    });
+  });
+
+  describe('error codes', () => {
+    it('reports SESSION_NOT_FOUND for a credential that names no session', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      await expectPackageError(() => sessions.get(unknownCredential), SessionNotFoundError, 'SESSION_NOT_FOUND');
+    });
+
+    it('reports SESSION_EXPIRED for a session past its expiry', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      const lapsed = { ...created.session, expiresAt: created.session.createdAt - 1 };
+      await redis.observer.set(await envelopeKey(namespace), JSON.stringify({ v: 1, data: JSON.stringify(lapsed) }), 'KEEPTTL');
+      await expectPackageError(() => sessions.get(created.token), SessionExpiredError, 'SESSION_EXPIRED');
+    });
+
+    it('reports SESSION_REVOKED for a revoked session', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.revoke(created.token);
+      await expectPackageError(() => sessions.get(created.token), SessionRevokedError, 'SESSION_REVOKED');
+    });
+
+    it('reports SESSION_REPLAY for a credential presented again after rotation', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(created.token);
+      await expectPackageError(() => sessions.get(created.token), SessionReplayError, 'SESSION_REPLAY');
+    });
+
+    it('reports SESSION_CONFLICT for an update against a stale version', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const created = await sessions.create({ userId: 'integration-user' });
+      await expectPackageError(() => sessions.update(created.token, { metadata: { plan: 'pro' } }, created.session.version + 1), SessionConflictError, 'SESSION_CONFLICT');
+    });
+
+    it('reports SESSION_ROTATION for a session that vanishes between validation and consumption', async () => {
+      const namespace = redis.newNamespace();
+      let onValidated = (): void => undefined;
+      // rotate() reports the validation metric after it accepts the credential and before it consumes it.
+      const metrics: SessionMetrics = { increment: name => { if (name === 'session.validate') onValidated(); }, observe: () => undefined, gauge: () => undefined };
+      const { sessions } = connectClient({ sessions: { enabled: true, namespace } }, { metrics });
+      const created = await sessions.create({ userId: 'integration-user' });
+      const key = await envelopeKey(namespace);
+      onValidated = () => { void redis.observer.del(key); };
+      await expectPackageError(() => sessions.rotate(created.token), SessionRotationError, 'SESSION_ROTATION');
     });
   });
 });

@@ -1,9 +1,11 @@
+import { SessionInputError } from './errors.js';
+
 /** Options used to serialize a Set-Cookie header. Values are intentionally narrow to avoid malformed headers. */
 export interface CookieOptions { name: string; httpOnly?: boolean; secure?: boolean; sameSite?: 'strict' | 'lax' | 'none'; domain?: string; path?: string; maxAge?: number; expires?: Date; }
 /** Serializes a cookie value and options into a Set-Cookie-compatible header value. */
 export function serializeCookie(value: string, options: CookieOptions): string {
-  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(options.name)) throw new Error('Invalid cookie name');
-  if (options.sameSite === 'none' && options.secure === false) throw new Error('SameSite=None requires Secure');
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(options.name)) throw new SessionInputError('Invalid cookie name');
+  if (options.sameSite === 'none' && options.secure === false) throw new SessionInputError('SameSite=None requires Secure');
   // options.name is validated against the RFC 6265 cookie-name token charset above, so it is
   // already header-safe and must be emitted as-is: encodeURIComponent would percent-encode
   // several characters that charset permits (# $ & + ^ | ~), silently changing the cookie name.

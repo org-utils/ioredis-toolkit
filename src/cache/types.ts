@@ -1,8 +1,13 @@
 import type { ModuleConfigBase } from '../redis/config-base.js';
+import { RedisToolkitError } from '../redis/errors.js';
 
-/** Thrown when a cached value cannot be decoded, or when the module is used while disabled. */
-export class CacheError extends Error {
-  constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'CacheError'; }
+/** Stable machine-readable error codes emitted by the cache. */
+export type CacheErrorCode = 'CACHE_CONFIGURATION' | 'CACHE_INPUT' | 'CACHE_SERIALIZATION' | 'CACHE_LIMIT';
+
+/** Thrown when cache configuration is invalid, a write is malformed or over the byte cap, or a value cannot be encoded to or decoded from JSON. */
+export class CacheError extends RedisToolkitError {
+  declare readonly code: CacheErrorCode;
+  constructor(code: CacheErrorCode, message: string, options?: ErrorOptions) { super(code, message, options); this.name = 'CacheError'; }
 }
 
 /** Normalized configuration for {@link RedisCache}. */

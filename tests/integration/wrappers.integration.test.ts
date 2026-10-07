@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CacheError } from '../../src/index.js';
+import { CacheError, LockError } from '../../src/index.js';
+import { expectPackageError } from '../support/errors.js';
 import { connectClient, redisFixture, redisUrl } from '../support/redis.js';
 
 describe.skipIf(!redisUrl)('convenience wrappers against real Redis', () => {
@@ -31,12 +32,18 @@ describe.skipIf(!redisUrl)('convenience wrappers against real Redis', () => {
     expect(await redis.keysUnder(namespace)).toEqual([`${namespace}:a`]);
   });
 
-  it('throws a typed CacheError instead of crashing on a malformed cached value', async () => {
+  it('reports CACHE_SERIALIZATION instead of crashing on a cached value that is not JSON', async () => {
     const namespace = redis.newNamespace();
     const { cache } = connectClient({ cache: { enabled: true, namespace } });
     await cache.set('k', { n: 1 });
     const [key] = await redis.keysUnder(namespace);
     await redis.observer.set(key!, 'not json', 'KEEPTTL');
-    await expect(cache.get('k')).rejects.toThrow(CacheError);
+    await expectPackageError(() => cache.get('k'), CacheError, 'CACHE_SERIALIZATION');
+  });
+
+  it('reports LOCK_HELD for work under a lock another holder has', async () => {
+    const { lock } = connectClient({ lock: { enabled: true, namespace: redis.newNamespace() } });
+    await lock.acquire('name');
+    await expectPackageError(() => lock.using('name', async () => undefined), LockError, 'LOCK_HELD');
   });
 });
