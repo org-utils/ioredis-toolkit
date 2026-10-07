@@ -4,8 +4,8 @@ import { connectClient, eventually, redisFixture, redisUrl } from '../support/re
 describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
   const redis = redisFixture();
 
-  it('publishes JSON-encoded values to the channel under the channel prefix', async () => {
-    const channelPrefix = redis.namespace();
+  it('publishes JSON-encoded values to the namespaced channel', async () => {
+    const channelPrefix = redis.newNamespace();
     const { pubsub } = connectClient({ pubsub: { enabled: true, channelPrefix } });
     const listener = redis.observer.duplicate();
     try {
@@ -21,7 +21,7 @@ describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
   });
 
   it('delivers parsed JSON messages to a subscribed handler and drops a malformed one', async () => {
-    const channelPrefix = redis.namespace();
+    const channelPrefix = redis.newNamespace();
     const { pubsub } = connectClient({ pubsub: { enabled: true, channelPrefix } });
     try {
       const received: unknown[] = [];
@@ -35,7 +35,7 @@ describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
   });
 
   it('delivers once to each handler on a channel and leaves the channel when the last handler does', async () => {
-    const { pubsub } = connectClient({ pubsub: { enabled: true, channelPrefix: redis.namespace() } });
+    const { pubsub } = connectClient({ pubsub: { enabled: true, channelPrefix: redis.newNamespace() } });
     try {
       const first: unknown[] = [];
       const second: unknown[] = [];
@@ -57,7 +57,7 @@ describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
   });
 
   it('stops receiving once closed', async () => {
-    const channelPrefix = redis.namespace();
+    const channelPrefix = redis.newNamespace();
     const { pubsub } = connectClient({ pubsub: { enabled: true, channelPrefix } });
     await pubsub.subscribe('orders', () => undefined);
     expect(await redis.observer.publish(`${channelPrefix}:orders`, '1')).toBe(1);

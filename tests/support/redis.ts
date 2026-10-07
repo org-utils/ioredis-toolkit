@@ -32,8 +32,7 @@ export function connectClient(modules: ModuleSections = {}, dependencies: RedisC
   return createRedisClient({ ...connectionConfig(), ...modules }, dependencies);
 }
 
-/** Every key under a namespace, as a consumer inspecting Redis would find them. */
-export async function keysUnder(observer: Redis, namespace: string): Promise<string[]> {
+async function keysUnder(observer: Redis, namespace: string): Promise<string[]> {
   const keys: string[] = [];
   let cursor = '0';
   do {
@@ -44,8 +43,7 @@ export async function keysUnder(observer: Redis, namespace: string): Promise<str
   return keys.sort();
 }
 
-/** Every key name and value under a namespace as one searchable text. */
-export async function storedUnder(observer: Redis, namespace: string): Promise<string> {
+async function storedUnder(observer: Redis, namespace: string): Promise<string> {
   const stored: string[] = [];
   for (const key of await keysUnder(observer, namespace)) {
     const type = await observer.type(key);
@@ -58,8 +56,8 @@ export async function storedUnder(observer: Redis, namespace: string): Promise<s
 }
 
 /** Retries an assertion until it holds, for state that settles on another connection. */
-export async function eventually(assertion: () => void | Promise<void>, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+export async function eventually(assertion: () => void | Promise<void>): Promise<void> {
+  const deadline = Date.now() + 2_000;
   for (;;) {
     try { await assertion(); return; }
     catch (error) { if (Date.now() >= deadline) throw error; }
@@ -67,12 +65,20 @@ export async function eventually(assertion: () => void | Promise<void>, timeoutM
   }
 }
 
-/**
- * Gives a real-server suite an observer — a raw connection for looking at, or
- * planting, what is in Redis — and namespaces no other test or run shares, which
- * it deletes afterwards. Shared servers are never flushed.
- */
-export function redisFixture(): { readonly observer: Redis; namespace(): string } {
+/** What a real-server suite uses to look at, or plant, what is in Redis. */
+export interface RedisFixture {
+  /** A raw connection, separate from any the package opens. */
+  readonly observer: Redis;
+  /** Mints a namespace no other test or run shares. */
+  newNamespace(): string;
+  /** Every key under a namespace. */
+  keysUnder(namespace: string): Promise<string[]>;
+  /** Every key name and value under a namespace as one searchable text. */
+  storedUnder(namespace: string): Promise<string>;
+}
+
+/** Sets up a suite's {@link RedisFixture} and deletes the namespaces it minted afterwards. Shared servers are never flushed. */
+export function redisFixture(): RedisFixture {
   let observer: Redis;
   const namespaces: string[] = [];
   beforeAll(() => { observer = new Redis(redisUrl!); });
@@ -85,6 +91,8 @@ export function redisFixture(): { readonly observer: Redis; namespace(): string 
   });
   return {
     get observer() { return observer; },
-    namespace() { const namespace = `test-${randomUUID()}`; namespaces.push(namespace); return namespace; },
+    newNamespace() { const namespace = `test-${randomUUID()}`; namespaces.push(namespace); return namespace; },
+    keysUnder: namespace => keysUnder(observer, namespace),
+    storedUnder: namespace => storedUnder(observer, namespace),
   };
 }

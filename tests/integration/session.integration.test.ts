@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createSessionManagerFromRedis, SessionSerializationError } from '../../src/index.js';
 import type { KeyManager, SessionConfig, SessionManager } from '../../src/index.js';
 import { hashSlot } from '../support/hash-slot.js';
-import { connectClient, connectionConfig, keysUnder, redisFixture, redisUrl, storedUnder } from '../support/redis.js';
+import { connectClient, connectionConfig, redisFixture, redisUrl } from '../support/redis.js';
 
 function keyManager(): KeyManager {
   const key = randomBytes(32);
@@ -23,7 +23,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
   /** The one key under a namespace holding a session envelope. */
   async function envelopeKey(namespace: string): Promise<string> {
     const holding: string[] = [];
-    for (const key of await keysUnder(redis.observer, namespace)) {
+    for (const key of await redis.keysUnder(namespace)) {
       if ((await redis.observer.type(key)) === 'string' && (await redis.observer.get(key))?.startsWith('{')) holding.push(key);
     }
     expect(holding).toHaveLength(1);
@@ -31,7 +31,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
   }
 
   it('creates, validates, touches, rotates, revokes and destroys a session', async () => {
-    const { manager } = createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace: redis.namespace(), rolling: true, touchInterval: 0, ttl: 600, idleTimeout: 300, absoluteTimeout: 600 });
+    const { manager } = createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace: redis.newNamespace(), rolling: true, touchInterval: 0, ttl: 600, idleTimeout: 300, absoluteTimeout: 600 });
     const created = await manager.create({ userId: 'integration-user' });
     expect(await manager.validate(created.token)).toEqual({ valid: true, session: created.session });
 
@@ -51,7 +51,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
   });
 
   it('issues a distinct credential with at least 256 bits of secret for each session', async () => {
-    const sessions = sessionsIn(redis.namespace());
+    const sessions = sessionsIn(redis.newNamespace());
     const first = await sessions.create({ userId: 'integration-user' });
     const second = await sessions.create({ userId: 'integration-user' });
     expect(first.token).not.toBe(second.token);
@@ -60,24 +60,25 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
   });
 
   it.each(['plain', 'encrypted'] as const)('never persists the raw credential in %s storage', async storage => {
-    const namespace = redis.namespace();
+    const namespace = redis.newNamespace();
     const sessions = storage === 'encrypted' ? sessionsIn(namespace, { encryption: { enabled: true } }, keyManager()) : sessionsIn(namespace);
     const created = await sessions.create({ userId: 'integration-user' });
 
-    const stored = await storedUnder(redis.observer, namespace);
-    // The session id is derived from the credential, so finding it proves this is where the sessions live.
+    const stored = await redis.storedUnder(namespace);
+    // The session id is a one-way digest of the credential, so finding it proves this is where the sessions live.
+    expect(created.session.id).toMatch(/^[a-f0-9]{64}$/);
     expect(stored).toContain(created.session.id);
     expect(stored).not.toContain(created.token);
     expect(stored).not.toContain(secretOf(created.token));
   });
 
   it('never persists the raw credential of a rotated session or of its successor', async () => {
-    const namespace = redis.namespace();
+    const namespace = redis.newNamespace();
     const sessions = sessionsIn(namespace);
     const created = await sessions.create({ userId: 'integration-user' });
     const rotated = await sessions.rotate(created.token);
 
-    const stored = await storedUnder(redis.observer, namespace);
+    const stored = await redis.storedUnder(namespace);
     expect(stored).toContain(rotated.session.id);
     for (const token of [created.token, rotated.token]) {
       expect(stored).not.toContain(token);
@@ -86,44 +87,49 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
   });
 
   it('scopes a session to its namespace', async () => {
-    const namespace = redis.namespace();
-    const elsewhere = redis.namespace();
+    const namespace = redis.newNamespace();
+    const elsewhere = redis.newNamespace();
     const created = await sessionsIn(namespace).create({ userId: 'integration-user' });
     expect(await sessionsIn(elsewhere).validate(created.token)).toEqual({ valid: false, reason: 'not_found' });
-    expect(await keysUnder(redis.observer, namespace)).not.toHaveLength(0);
-    expect(await keysUnder(redis.observer, elsewhere)).toHaveLength(0);
+    expect(await redis.keysUnder(namespace)).not.toHaveLength(0);
+    expect(await redis.keysUnder(elsewhere)).toHaveLength(0);
   });
 
   it("keeps one user's keys in a single hash slot, apart from another user's", async () => {
-    const namespace = redis.namespace();
+    /** The slots of a namespace's hash-tagged keys; keys found by credential alone carry no tag and may land anywhere. */
+    async function taggedSlots(namespace: string): Promise<number[]> {
+      const tagged = (await redis.keysUnder(namespace)).filter(key => /\{[a-f0-9]{64}\}/.test(key));
+      // A user id cannot choose its own hash tag.
+      expect(tagged.join('\n')).not.toContain('evil');
+      return tagged.map(hashSlot);
+    }
+
+    const namespace = redis.newNamespace();
     const sessions = sessionsIn(namespace);
     await sessions.create({ userId: 'user:{evil}' });
     await sessions.create({ userId: 'user:{evil}' });
     await sessions.setSecurityVersion('user:{evil}', 1);
-    await sessions.create({ userId: 'someone-else' });
+    const slots = await taggedSlots(namespace);
+    expect(slots.length).toBeGreaterThan(1);
+    expect(new Set(slots).size).toBe(1);
 
-    // Keys found by credential alone carry no hash tag and are free to land in any slot.
-    const tagged = (await keysUnder(redis.observer, namespace)).filter(key => /\{.+\}/.test(key));
-    const slots = new Map<number, string[]>();
-    for (const key of tagged) slots.set(hashSlot(key), [...(slots.get(hashSlot(key)) ?? []), key]);
-    // Two records, the index over them and the security version; then the other user's record and index.
-    expect([...slots.values()].map(keys => keys.length).sort()).toEqual([2, 4]);
-    // A user id cannot choose its own hash tag.
-    expect(tagged.join('\n')).not.toContain('evil');
+    const elsewhere = redis.newNamespace();
+    await sessionsIn(elsewhere).create({ userId: 'someone-else' });
+    expect(new Set(await taggedSlots(elsewhere))).not.toEqual(new Set(slots));
   });
 
   describe('stored envelope', () => {
-    it('reads back a version 1 envelope written by an earlier release', async () => {
-      const namespace = redis.namespace();
+    it('reads back a version 1 envelope it did not write', async () => {
+      const namespace = redis.newNamespace();
       const sessions = sessionsIn(namespace);
       const created = await sessions.create({ userId: 'integration-user' });
-      const record = { ...created.session, metadata: { writtenBy: 'an earlier release' } };
+      const record = { ...created.session, metadata: { writtenBy: 'another writer' } };
       await redis.observer.set(await envelopeKey(namespace), JSON.stringify({ v: 1, data: JSON.stringify(record) }), 'KEEPTTL');
       expect(await sessions.get(created.token)).toEqual(record);
     });
 
     it('rejects an envelope version it does not know', async () => {
-      const namespace = redis.namespace();
+      const namespace = redis.newNamespace();
       const sessions = sessionsIn(namespace);
       const created = await sessions.create({ userId: 'integration-user' });
       await redis.observer.set(await envelopeKey(namespace), JSON.stringify({ v: 2, data: JSON.stringify(created.session) }), 'KEEPTTL');
@@ -131,7 +137,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     });
 
     it('round-trips an encrypted record and keeps it unreadable in Redis', async () => {
-      const namespace = redis.namespace();
+      const namespace = redis.newNamespace();
       const sessions = sessionsIn(namespace, { encryption: { enabled: true } }, keyManager());
       const created = await sessions.create({ userId: 'integration-user', metadata: { plan: 'pro' } });
       expect(await sessions.get(created.token)).toEqual(created.session);
@@ -139,7 +145,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     });
 
     it('rejects an encrypted record that was tampered with', async () => {
-      const namespace = redis.namespace();
+      const namespace = redis.newNamespace();
       const sessions = sessionsIn(namespace, { encryption: { enabled: true } }, keyManager());
       const created = await sessions.create({ userId: 'integration-user' });
       const key = await envelopeKey(namespace);
