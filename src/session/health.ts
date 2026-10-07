@@ -6,6 +6,8 @@ export class SessionHealthProvider {
   constructor(private readonly redis: RedisClientWrapper, private readonly degradedMs = 100) {}
   /** Performs one cheap Redis PING and classifies latency or availability. */
   async check(): Promise<SessionHealth> {
+    // Local high-resolution timing is correct here: latency is a duration inside this process, not
+    // shared state, so ADR-0002's rule that shared state reads the kernel clock does not apply.
     const started = performance.now();
     try {
       const response = await this.redis.ping();

@@ -18,7 +18,7 @@ export interface RateLimitResult {
   limit: number;
   /** Remaining units after the operation. */
   remaining: number;
-  /** Approximate Unix timestamp at which the current fixed window expires. */
+  /** Approximate Unix timestamp, in Redis server time, at which the current fixed window expires. */
   resetAt: number;
   /** Seconds until the counter resets when the request is denied; otherwise zero. */
   retryAfterSeconds: number;

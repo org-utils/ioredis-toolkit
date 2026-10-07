@@ -4,6 +4,7 @@ import { NoopMetrics } from './metrics.js';
 import type { SessionRepository } from './repository.js';
 import type { SessionTokenManager } from './token.js';
 import type { CreateSessionInput, CreatedSession, RotationResult, SessionMetrics, SessionPatch, SessionRecord, ValidationResult } from './types.js';
+import { RedisClock } from '../redis/clock.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
 
 /** Dependencies required by {@link SessionService}. */
@@ -12,8 +13,9 @@ export interface SessionServiceOptions { repository: SessionRepository; tokens: 
 /** Domain service enforcing session lifecycle and authentication invariants. */
 export class SessionService {
   private readonly metrics: SessionMetrics;
+  private readonly clock: RedisClock;
   /** Creates the domain service from repository, token, Redis-clock, and normalized configuration dependencies. */
-  constructor(private readonly o: SessionServiceOptions) { this.metrics = o.metrics ?? new NoopMetrics(); }
+  constructor(private readonly o: SessionServiceOptions) { this.metrics = o.metrics ?? new NoopMetrics(); this.clock = new RedisClock(o.redis); }
 
   /** Creates a new session and returns its raw credential exactly once. */
   async create(input: CreateSessionInput): Promise<CreatedSession> {
@@ -172,7 +174,7 @@ export class SessionService {
   }
 
   private async now(): Promise<number> {
-    try { const [seconds] = await this.o.redis.time(); return Number(seconds); }
+    try { return await this.clock.serverSeconds(); }
     catch (error) { throw new SessionStorageError('Redis time unavailable', error); }
   }
 }

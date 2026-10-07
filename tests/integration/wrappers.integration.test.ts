@@ -19,8 +19,10 @@ describe.skipIf(!redisUrl)('convenience wrappers against real Redis', () => {
 
   it('writes a rate-limit window under the rate-limit namespace', async () => {
     const namespace = redis.newNamespace();
-    await connectClient({ rateLimit: { enabled: true, namespace, windowSeconds: 60 } }).rateLimiter.consume('a', 1, 120);
-    expect(await redis.keysUnder(namespace)).toEqual([`${namespace}:a:2`]);
+    await connectClient({ rateLimit: { enabled: true, namespace } }).rateLimiter.consume('a');
+    const keys = await redis.keysUnder(namespace);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(new RegExp(`^${namespace}:a:\\d+$`));
   });
 
   it('writes a stream under the streams namespace', async () => {

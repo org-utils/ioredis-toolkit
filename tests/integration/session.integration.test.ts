@@ -95,13 +95,14 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     expect(await redis.keysUnder(elsewhere)).toHaveLength(0);
   });
 
-  it("keeps one user's keys in a single hash slot, apart from another user's", async () => {
-    /** The slots of a namespace's hash-tagged keys; keys found by credential alone carry no tag and may land anywhere. */
-    async function taggedSlots(namespace: string): Promise<number[]> {
-      const tagged = (await redis.keysUnder(namespace)).filter(key => /\{[a-f0-9]{64}\}/.test(key));
+  it("keeps one user's keys in a single hash slot chosen by the user", async () => {
+    /** A namespace's keys split by whether they carry a hash tag; a key found by credential alone carries none. */
+    async function keysByTag(namespace: string): Promise<{ tagged: string[]; untagged: string[] }> {
+      const keys = await redis.keysUnder(namespace);
       // A user id cannot choose its own hash tag.
-      expect(tagged.join('\n')).not.toContain('evil');
-      return tagged.map(hashSlot);
+      expect(keys.join('\n')).not.toContain('evil');
+      const hashTag = /\{[a-f0-9]{64}\}/;
+      return { tagged: keys.filter(key => hashTag.test(key)), untagged: keys.filter(key => !hashTag.test(key)) };
     }
 
     const namespace = redis.newNamespace();
@@ -109,13 +110,18 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     await sessions.create({ userId: 'user:{evil}' });
     await sessions.create({ userId: 'user:{evil}' });
     await sessions.setSecurityVersion('user:{evil}', 1);
-    const slots = await taggedSlots(namespace);
-    expect(slots.length).toBeGreaterThan(1);
-    expect(new Set(slots).size).toBe(1);
+    const user = await keysByTag(namespace);
+    // One locator per credential may land anywhere; everything else the user owns must share a slot.
+    expect(user.untagged).toHaveLength(2);
+    expect(user.tagged.length).toBeGreaterThan(1);
+    expect(new Set(user.tagged.map(hashSlot)).size).toBe(1);
 
+    // These two user ids are known to hash to different slots, so sharing one would mean the tag ignores the user.
     const elsewhere = redis.newNamespace();
     await sessionsIn(elsewhere).create({ userId: 'someone-else' });
-    expect(new Set(await taggedSlots(elsewhere))).not.toEqual(new Set(slots));
+    const other = await keysByTag(elsewhere);
+    expect(other.tagged.length).toBeGreaterThan(1);
+    expect(hashSlot(other.tagged[0]!)).not.toBe(hashSlot(user.tagged[0]!));
   });
 
   describe('stored envelope', () => {
