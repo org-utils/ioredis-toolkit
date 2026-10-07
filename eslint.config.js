@@ -11,10 +11,16 @@ export default tseslint.config(
     }
   },
   {
-    // The kernel never knows what is built on top of it (CONTEXT.md, ADR-0001).
+    // The kernel never knows what is built on top of it (CONTEXT.md): nothing under src/redis reaches a parent directory.
     files: ['src/redis/**/*.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [{ regex: '^\\.\\./', message: 'The kernel imports nothing from outside src/redis.' }] }]
+      'no-restricted-imports': ['error', {
+        patterns: [{ regex: '^(\\./)*\\.\\./', message: 'The kernel imports nothing from the modules built on it.' }]
+      }],
+      'no-restricted-syntax': ['error', {
+        selector: ':matches(ImportExpression > Literal, TSImportType Literal)[value=/^(\\.\\/)*\\.\\.\\//]',
+        message: 'The kernel imports nothing from the modules built on it.'
+      }]
     }
   }
 );
