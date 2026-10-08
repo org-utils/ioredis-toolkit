@@ -1,6 +1,6 @@
 import type { RedisClientWrapper } from '../redis/index.js';
 import type { SessionHealth } from './types.js';
-/** Performs a lightweight Redis health check for session infrastructure. */
+/** Performs a lightweight Redis health check for session infrastructure. Internal under ADR-0003, and nothing in the package constructs it, so it has no path from the public surface until the client facade offers one. */
 export class SessionHealthProvider {
   /** Creates a health provider. `degradedMs` is the latency threshold for degraded status. */
   constructor(private readonly redis: RedisClientWrapper, private readonly degradedMs = 100) {}

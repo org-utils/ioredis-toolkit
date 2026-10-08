@@ -21,7 +21,7 @@ const redis = createRedisClient({
 
 | Option | Type | Default | Description |
 |---|---|---:|---|
-| `enabled` | `boolean` | `false` | Enables the module. `redis.pubsub` throws `RedisConfigurationError` while disabled; `new RedisPubSub(...)` remains directly constructible either way. |
+| `enabled` | `boolean` | `false` | Enables the module. `redis.pubsub` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `events` | Namespace: the first segment of every channel name. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `maxMessageBytes` | `number` | `1048576` | Maximum encoded JSON message size. |
 
