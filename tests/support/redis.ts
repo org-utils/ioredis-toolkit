@@ -55,6 +55,35 @@ async function storedUnder(observer: Redis, namespace: string): Promise<string> 
   return stored.join('\n');
 }
 
+async function commandsFromClientsOf(observer: Redis, namespace: string, work: () => Promise<unknown>): Promise<string[][]> {
+  // Not `observer.monitor()`: that rejects when other clients' traffic arrives together with MONITOR's own reply,
+  // which ioredis reports as a queue-state error. Such traffic is from before `work`, so that one error is dropped;
+  // any other (a refused MONITOR, a lost connection) fails the caller.
+  const monitor = observer.duplicate({ monitor: true });
+  const failed = new Promise<never>((_resolve, reject) => {
+    monitor.on('error', (error: Error) => { if (!error.message.startsWith('Command queue state error')) reject(error); });
+  });
+  failed.catch(() => undefined);
+  try {
+    await Promise.race([new Promise<void>(resolve => { monitor.once('monitoring', () => resolve()); }), failed]);
+    const sent: Array<{ source: string; args: string[] }> = [];
+    const marker = `end-${randomUUID()}`;
+    const ended = new Promise<void>(resolve => {
+      monitor.on('monitor', (_time: string, args: string[], source: string) => {
+        if (args.includes(marker)) resolve();
+        else if (source !== 'lua') sent.push({ source, args });
+      });
+    });
+    await work();
+    await observer.echo(marker);
+    await Promise.race([ended, failed]);
+    const clients = new Set(sent.filter(({ args }) => args.some(arg => arg.startsWith(`${namespace}:`))).map(({ source }) => source));
+    return sent.filter(({ source }) => clients.has(source)).map(({ args }) => args);
+  } finally {
+    monitor.disconnect();
+  }
+}
+
 /** Retries an assertion until it holds, for state that settles on another connection. */
 export async function eventually(assertion: () => void | Promise<void>): Promise<void> {
   const deadline = Date.now() + 2_000;
@@ -75,9 +104,17 @@ export interface RedisFixture {
   keysUnder(namespace: string): Promise<string[]>;
   /** Every key name and value under a namespace as one searchable text. */
   storedUnder(namespace: string): Promise<string>;
+  /** Runs `work` and returns, as argument lists in the order the server received them, everything sent meanwhile by each connection that named a key under a namespace. Commands a script runs are not included. */
+  commandsFromClientsOf(namespace: string, work: () => Promise<unknown>): Promise<string[][]>;
+  /**
+   * Empties the script cache of the whole server, as a restart or failover would: the one server-wide effect a suite may have.
+   * No stored data is touched, and a client that runs Lua by SHA sends the source again when the server asks for it,
+   * so the only trace on a shared server is that one extra EVAL per script per client.
+   */
+  flushScriptCache(): Promise<void>;
 }
 
-/** Sets up a suite's {@link RedisFixture} and deletes the namespaces it minted afterwards. Shared servers are never flushed. */
+/** Sets up a suite's {@link RedisFixture} and deletes the namespaces it minted afterwards. Stored data on a shared server is never flushed. */
 export function redisFixture(): RedisFixture {
   let observer: Redis;
   const namespaces: string[] = [];
@@ -94,5 +131,7 @@ export function redisFixture(): RedisFixture {
     newNamespace() { const namespace = `test-${randomUUID()}`; namespaces.push(namespace); return namespace; },
     keysUnder: namespace => keysUnder(observer, namespace),
     storedUnder: namespace => storedUnder(observer, namespace),
+    commandsFromClientsOf: (namespace, work) => commandsFromClientsOf(observer, namespace, work),
+    flushScriptCache: async () => { await observer.script('FLUSH'); },
   };
 }

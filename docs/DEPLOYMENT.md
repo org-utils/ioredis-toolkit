@@ -4,7 +4,7 @@
 
 The serializer envelope contains a schema version. New application versions should continue reading the previous supported version during a rolling deployment. Add new fields rather than changing the meaning of existing fields in place — for example, `SessionRecord.idleTimeoutSeconds` (0.5.0) was added as a new optional field to preserve rotation/touch idle-window behavior, rather than repurposing an existing field. A record written by an older version simply omits it, and the serializer's schema validation treats it as optional.
 
-Lua scripts are embedded and versioned with the package build. `EVALSHA` is attempted first; after a `NOSCRIPT` response the exact source is sent with `EVAL`, allowing Redis restart/failover to recover without an external script preload step.
+Lua scripts are embedded and versioned with the package build. Every module that runs Lua (sessions, the lock and the rate limiter) goes through the kernel's script registry: `EVALSHA` is attempted first; after a `NOSCRIPT` response the exact source is sent with `EVAL`, allowing Redis restart/failover to recover without an external script preload step.
 
 ## Rollback
 
