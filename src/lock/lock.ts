@@ -1,16 +1,20 @@
 import { randomBytes } from 'node:crypto';
 import { KeyStrategy } from '../redis/keys.js';
+import { ScriptRegistry } from '../redis/scripts.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
 import { LockError, type LockAcquireResult, type LockConfig } from './types.js';
 
-const RELEASE = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
-const EXTEND = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end`;
+const SCRIPT_SOURCES = {
+  release: `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`,
+  extend: `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end`,
+} as const;
 
 /** Redis distributed lock using an ownership token and compare-and-delete semantics. */
 export class RedisLock {
   private readonly keys: KeyStrategy;
+  private readonly scripts: ScriptRegistry<keyof typeof SCRIPT_SOURCES>;
   /** Creates a lock bound to the shared Redis client. The client must be shared with the other modules. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: LockConfig) { this.keys = new KeyStrategy(config.namespace); }
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: LockConfig) { this.keys = new KeyStrategy(config.namespace); this.scripts = new ScriptRegistry(redis, SCRIPT_SOURCES); }
 
   /** Builds the physical key for a logical lock name. */
   key(name: string): string { return this.keys.key(name); }
@@ -24,12 +28,12 @@ export class RedisLock {
   }
 
   /** Releases a lock only when the supplied ownership token still owns it. */
-  async release(name: string, token: string): Promise<boolean> { return Number(await this.redis.eval(RELEASE, 1, this.key(name), token)) === 1; }
+  async release(name: string, token: string): Promise<boolean> { return Number(await this.scripts.eval('release', [this.key(name)], [token])) === 1; }
 
   /** Extends a lock only when the supplied ownership token still owns it. */
   async extend(name: string, token: string, ttl = this.config.defaultTtl): Promise<boolean> {
     this.assertTtl(ttl);
-    return Number(await this.redis.eval(EXTEND, 1, this.key(name), token, String(ttl * 1000))) === 1;
+    return Number(await this.scripts.eval('extend', [this.key(name)], [token, String(ttl * 1000)])) === 1;
   }
 
   /** Executes a function while holding a lock, releasing it in a finally block. */

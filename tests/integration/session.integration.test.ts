@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createSessionManagerFromRedis,
-  SessionConflictError, SessionExpiredError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError,
+  SessionConflictError, SessionExpiredError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError, SessionStorageError,
 } from '../../src/index.js';
 import type { KeyManager, SessionConfig, SessionManager, SessionMetrics } from '../../src/index.js';
 import { unknownCredential } from '../support/credential.js';
@@ -251,6 +251,17 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
       const key = await envelopeKey(namespace);
       onValidated = () => { void redis.observer.del(key); };
       await expectPackageError(() => sessions.rotate(created.token), SessionRotationError, 'SESSION_ROTATION');
+    });
+
+    it('reports SESSION_STORAGE when Redis refuses what a session script does', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      await sessions.create({ userId: 'integration-user' });
+      // The user's index is the one sorted set a session leaves; as a string, the script's write to it is refused.
+      for (const key of await redis.keysUnder(namespace)) {
+        if ((await redis.observer.type(key)) === 'zset') await redis.observer.multi().del(key).set(key, 'not an index').exec();
+      }
+      await expectPackageError(() => sessions.create({ userId: 'integration-user' }), SessionStorageError, 'SESSION_STORAGE');
     });
   });
 });
