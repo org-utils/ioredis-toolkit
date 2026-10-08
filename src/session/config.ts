@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { byteCap, moduleConfigSchema } from "../redis/config-base.js";
+import { byteCap, moduleConfigSchema, parseConfig } from "../redis/config-base.js";
 import { SessionConfigurationError } from "./errors.js";
 
 /** Runtime schema for session configuration and security invariants. */
@@ -85,12 +85,9 @@ export const SessionConfigSchema = moduleConfigSchema("app")
 export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 /** Validates and applies secure defaults to session configuration. */
 export function parseSessionConfig(input: unknown): SessionConfig {
-  const result = SessionConfigSchema.safeParse(input ?? {});
-  if (!result.success)
-    throw new SessionConfigurationError(
-      result.error.issues
-        .map((i) => `${i.path.join(".")}: ${i.message}`)
-        .join("; "),
-    );
-  return result.data;
+  return parseConfig(
+    SessionConfigSchema,
+    input,
+    (message) => new SessionConfigurationError(message),
+  );
 }

@@ -16,7 +16,7 @@ export class RedisCache {
     const raw = await this.redis.get(this.key(key));
     if (raw === null) return { hit: false, value: null };
     try { return { hit: true, value: JSON.parse(raw) as T }; }
-    catch (error) { throw new CacheError(`Cached value for "${key}" is not valid JSON`, { cause: error }); }
+    catch (error) { throw new CacheError('CACHE_SERIALIZATION', `Cached value for "${key}" is not valid JSON`, { cause: error }); }
   }
 
   /** Reads a cached value and returns null on a miss. */
@@ -24,11 +24,13 @@ export class RedisCache {
 
   /** Stores a JSON-serializable value with optional TTL and NX/XX semantics. */
   async set<T>(key: string, value: T, options: CacheSetOptions = {}): Promise<boolean> {
-    if (options.nx && options.xx) throw new RangeError('Cache set options nx and xx are mutually exclusive');
-    if (options.ttl !== undefined && (!Number.isInteger(options.ttl) || options.ttl <= 0)) throw new RangeError('Cache TTL must be a positive integer');
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new TypeError('Cache values must be JSON-serializable');
-    if (Buffer.byteLength(encoded, 'utf8') > this.config.maxValueBytes) throw new RangeError('Cache value exceeds maxValueBytes');
+    if (options.nx && options.xx) throw new CacheError('CACHE_INPUT', 'Cache set options nx and xx are mutually exclusive');
+    if (options.ttl !== undefined && (!Number.isInteger(options.ttl) || options.ttl <= 0)) throw new CacheError('CACHE_INPUT', 'Cache TTL must be a positive integer');
+    let encoded: string | undefined;
+    try { encoded = JSON.stringify(value); }
+    catch (error) { throw new CacheError('CACHE_SERIALIZATION', 'Cache values must be JSON-serializable', { cause: error }); }
+    if (encoded === undefined) throw new CacheError('CACHE_SERIALIZATION', 'Cache values must be JSON-serializable');
+    if (Buffer.byteLength(encoded, 'utf8') > this.config.maxValueBytes) throw new CacheError('CACHE_LIMIT', 'Cache value exceeds maxValueBytes');
     const args: string[] = ['EX', String(options.ttl ?? this.config.defaultTtl)];
     if (options.nx) args.push('NX');
     if (options.xx) args.push('XX');

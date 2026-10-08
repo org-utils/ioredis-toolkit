@@ -1,4 +1,14 @@
 import type { ModuleConfigBase } from '../redis/config-base.js';
+import { RedisToolkitError } from '../redis/errors.js';
+
+/** Stable machine-readable error codes emitted by Streams. */
+export type StreamsErrorCode = 'STREAMS_CONFIGURATION' | 'STREAMS_INPUT';
+
+/** Thrown when Streams configuration is invalid, or a stream read's options are malformed. */
+export class StreamsError extends RedisToolkitError {
+  declare readonly code: StreamsErrorCode;
+  constructor(code: StreamsErrorCode, message: string, options?: ErrorOptions) { super(code, message, options); this.name = 'StreamsError'; }
+}
 
 /** Normalized configuration for {@link RedisStreams}. */
 export interface StreamsConfig extends ModuleConfigBase {

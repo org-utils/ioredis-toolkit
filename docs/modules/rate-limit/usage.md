@@ -96,6 +96,17 @@ Windows are bucketed by Redis server time, never the application server's clock,
 
 A fixed window can allow bursts at a boundary. For example, a request near the end of one window and another immediately after the boundary count against different windows. If smoother traffic shaping is required, use a different algorithm rather than assuming this module is a sliding-window limiter.
 
+## Errors
+
+Every error this module raises itself is a `RateLimitError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+
+| Code | Thrown when |
+|---|---|
+| `RATE_LIMIT_CONFIGURATION` | the rate-limit configuration is invalid |
+| `RATE_LIMIT_INPUT` | `consume()` is given a cost that is not a positive integer |
+
+A denied request is not an error: `consume()` returns `allowed: false`.
+
 ## Overrides
 
 ```ts

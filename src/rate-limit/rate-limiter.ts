@@ -1,7 +1,7 @@
 import { RedisClock } from '../redis/clock.js';
 import { KeyStrategy } from '../redis/keys.js';
 import type { RedisClientWrapper } from '../redis/wrapper.js';
-import type { RateLimitConfig, RateLimitResult } from './types.js';
+import { RateLimitError, type RateLimitConfig, type RateLimitResult } from './types.js';
 
 const SCRIPT = `local c=redis.call('INCRBY',KEYS[1],ARGV[2]); if c==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; local ttl=redis.call('TTL',KEYS[1]); return {c,ttl}`;
 
@@ -17,7 +17,7 @@ export class RedisRateLimiter {
 
   /** Consumes one request from the configured fixed window. */
   async consume(subject: string, cost = 1): Promise<RateLimitResult> {
-    if (!Number.isInteger(cost) || cost <= 0) throw new RangeError('Rate-limit cost must be a positive integer');
+    if (!Number.isInteger(cost) || cost <= 0) throw new RateLimitError('RATE_LIMIT_INPUT', 'Rate-limit cost must be a positive integer');
     const serverSeconds = await this.clock.serverSeconds();
     const key = this.key(subject, serverSeconds);
     const raw = await this.redis.eval(SCRIPT, 1, key, String(this.config.windowSeconds), String(cost));

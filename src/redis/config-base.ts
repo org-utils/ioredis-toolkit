@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { RedisToolkitError } from './errors.js';
 
 /** The configuration every module shares. */
 export interface ModuleConfigBase {
@@ -22,6 +23,16 @@ export function moduleConfigSchema(defaultNamespace: string): z.ZodObject<{ enab
     enabled: z.boolean().default(false),
     namespace: z.string().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/).default(defaultNamespace),
   });
+}
+
+/**
+ * Parses a configuration against its schema. A rejected configuration is thrown as the typed
+ * error `toError` builds from its issues, so the validation library's own error never reaches a consumer.
+ */
+export function parseConfig<Schema extends z.ZodType>(schema: Schema, input: unknown, toError: (message: string) => RedisToolkitError): z.output<Schema> {
+  const result = schema.safeParse(input ?? {});
+  if (!result.success) throw toError(result.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; '));
+  return result.data;
 }
 
 /** Schema for a cap, in bytes, on the UTF-8 encoded size of a payload. */

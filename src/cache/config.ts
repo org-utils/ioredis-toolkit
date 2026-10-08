@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { byteCap, moduleConfigSchema } from '../redis/config-base.js';
-import type { CacheConfig } from './types.js';
+import { byteCap, moduleConfigSchema, parseConfig } from '../redis/config-base.js';
+import { CacheError, type CacheConfig } from './types.js';
 
 /** Runtime schema for cache configuration. */
 export const CacheConfigSchema = moduleConfigSchema('cache').extend({
@@ -9,5 +9,5 @@ export const CacheConfigSchema = moduleConfigSchema('cache').extend({
 });
 /** Validates and normalizes cache configuration. */
 export function parseCacheConfig(input: unknown): CacheConfig {
-  return CacheConfigSchema.parse(input ?? {}) as CacheConfig;
+  return parseConfig(CacheConfigSchema, input, message => new CacheError('CACHE_CONFIGURATION', message)) as CacheConfig;
 }

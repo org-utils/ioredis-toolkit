@@ -1,4 +1,14 @@
 import type { ModuleConfigBase } from '../redis/config-base.js';
+import { RedisToolkitError } from '../redis/errors.js';
+
+/** Stable machine-readable error codes emitted by the distributed lock. */
+export type LockErrorCode = 'LOCK_CONFIGURATION' | 'LOCK_INPUT' | 'LOCK_LIMIT' | 'LOCK_HELD';
+
+/** Thrown when lock configuration is invalid, a lock TTL is malformed or over the configured maximum, or `using()` finds the lock already held. */
+export class LockError extends RedisToolkitError {
+  declare readonly code: LockErrorCode;
+  constructor(code: LockErrorCode, message: string, options?: ErrorOptions) { super(code, message, options); this.name = 'LockError'; }
+}
 
 /** Normalized configuration for {@link RedisLock}. */
 export interface LockConfig extends ModuleConfigBase {

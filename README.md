@@ -64,6 +64,24 @@ redis.withLock({ namespace: 'maintenance' }, 'replace');
 
 `withLock()` is canonical; `withlock()` is provided as an alias.
 
+## Errors
+
+Every error the package raises itself extends `RedisToolkitError` and carries a stable, machine-readable `code`, so one `catch` can recognise a package failure and branch on its kind without reading the message:
+
+```ts
+import { RedisToolkitError } from 'ioredis-toolkit';
+
+try {
+  await redis.lock.using('report:daily', generateReport);
+} catch (error) {
+  if (!(error instanceof RedisToolkitError)) throw error;
+  if (error.code === 'LOCK_HELD') return; // another worker has it
+  throw error;
+}
+```
+
+Each module has its own class under that base — `SessionError` and its subclasses, `CacheError`, `LockError`, `RateLimitError`, `PubSubError`, `StreamsError`, and `RedisConfigurationError` for the connection and for a module used while disabled — and its usage guide lists the codes it can report. A failure reported by Redis or the connection is wrapped as `SESSION_STORAGE` inside a session operation; in the convenience wrappers it passes through as ioredis raised it.
+
 ## Documentation
 
 Each module has a complete usage guide with configuration tables, types, method arguments, return values, semantics, edge cases, and multiple examples:

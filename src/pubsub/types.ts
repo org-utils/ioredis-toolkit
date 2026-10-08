@@ -1,4 +1,14 @@
 import type { ModuleConfigBase } from '../redis/config-base.js';
+import { RedisToolkitError } from '../redis/errors.js';
+
+/** Stable machine-readable error codes emitted by Pub/Sub. */
+export type PubSubErrorCode = 'PUBSUB_CONFIGURATION' | 'PUBSUB_SERIALIZATION' | 'PUBSUB_LIMIT';
+
+/** Thrown when Pub/Sub configuration is invalid, or a published value cannot be encoded to JSON or is over the byte cap. */
+export class PubSubError extends RedisToolkitError {
+  declare readonly code: PubSubErrorCode;
+  constructor(code: PubSubErrorCode, message: string, options?: ErrorOptions) { super(code, message, options); this.name = 'PubSubError'; }
+}
 
 /** Normalized configuration for {@link RedisPubSub}. */
 export interface PubSubConfig extends ModuleConfigBase {

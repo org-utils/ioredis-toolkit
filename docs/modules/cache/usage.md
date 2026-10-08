@@ -45,7 +45,7 @@ redis.cache.key('user:42');
 
 ### `get<T>(key)`
 
-Returns `{ hit, value }`. A miss returns `{ hit: false, value: null }`. A cached value that is not valid JSON (for example, written directly by another, non-conforming client) throws a typed `CacheError` rather than crashing with an uncaught `SyntaxError` or silently returning a miss.
+Returns `{ hit, value }`. A miss returns `{ hit: false, value: null }`. A cached value that is not valid JSON (for example, written directly by another, non-conforming client) throws a typed `CacheError` (code `CACHE_SERIALIZATION`) rather than crashing with an uncaught `SyntaxError` or silently returning a miss.
 
 ```ts
 import { CacheError } from 'ioredis-toolkit';
@@ -143,7 +143,18 @@ const product = await redis.cache.getValue<Product>('product:1');
 
 Values must be JSON-serializable. `undefined`, functions, symbols, cyclic structures, and values that cannot be represented by JSON are rejected. The encoded UTF-8 payload must not exceed `maxValueBytes`.
 
-## 6. Per-client overrides
+## 6. Errors
+
+Every error this module raises itself is a `CacheError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+
+| Code | Thrown when |
+|---|---|
+| `CACHE_CONFIGURATION` | the cache configuration is invalid |
+| `CACHE_INPUT` | `set()` is given both `nx` and `xx`, or a `ttl` that is not a positive integer |
+| `CACHE_SERIALIZATION` | `set()` is given a value JSON cannot represent, or `get()` reads a value that is not valid JSON |
+| `CACHE_LIMIT` | the encoded value exceeds `maxValueBytes` |
+
+## 7. Per-client overrides
 
 Global configuration can be merged or replaced:
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseConfig } from './config-base.js';
 import { RedisConfigurationError } from './errors.js';
 import type { RedisConfig } from './types.js';
 
@@ -50,9 +51,5 @@ export const RedisConnectionConfigSchema = z.preprocess(
  * matching {@link StandaloneRedisConfig}'s optional `mode` field.
  */
 export function parseRedisConnectionConfig(input: unknown): RedisConfig {
-  const result = RedisConnectionConfigSchema.safeParse(input ?? {});
-  if (!result.success) {
-    throw new RedisConfigurationError(result.error.issues.map((issue: { path: PropertyKey[]; message: string }) => `${issue.path.join('.')}: ${issue.message}`).join('; '));
-  }
-  return result.data as RedisConfig;
+  return parseConfig(RedisConnectionConfigSchema, input, message => new RedisConfigurationError(message)) as RedisConfig;
 }

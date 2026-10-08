@@ -100,7 +100,7 @@ for (const entry of entries) {
 `StreamReadOptions`:
 
 - `group`: consumer group name.
-- `consumer`: consumer name; **required** when `group` is supplied — `read()` throws a `RangeError` if `group` is set without `consumer`, instead of silently falling back to a plain, incorrectly-cursored `XREAD`.
+- `consumer`: consumer name; **required** when `group` is supplied — `read()` throws a `StreamsError` (code `STREAMS_INPUT`) if `group` is set without `consumer`, instead of silently falling back to a plain, incorrectly-cursored `XREAD`.
 - `count`: maximum requested entries.
 - `blockMs`: optional Redis blocking read duration; defaults to the module's configured `blockMs` when omitted.
 - `id`: starting/continuation ID; group reads commonly use `>` for new messages.
@@ -132,6 +132,15 @@ const size = await redis.streams.length('orders');
 ## Operational guidance
 
 Consumer groups create pending-entry state. Production consumers should also implement a pending-entry recovery strategy using native Redis commands appropriate to their workload. This wrapper intentionally keeps its surface small and does not pretend that a single `read()` loop is a complete queue-processing framework.
+
+## Errors
+
+Every error this module raises itself is a `StreamsError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+
+| Code | Thrown when |
+|---|---|
+| `STREAMS_CONFIGURATION` | the Streams configuration is invalid |
+| `STREAMS_INPUT` | `read()` is given a `group` without a `consumer` |
 
 ## Overrides
 

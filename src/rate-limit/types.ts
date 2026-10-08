@@ -1,4 +1,14 @@
 import type { ModuleConfigBase } from '../redis/config-base.js';
+import { RedisToolkitError } from '../redis/errors.js';
+
+/** Stable machine-readable error codes emitted by the rate limiter. */
+export type RateLimitErrorCode = 'RATE_LIMIT_CONFIGURATION' | 'RATE_LIMIT_INPUT';
+
+/** Thrown when rate-limit configuration is invalid, or a cost is malformed. */
+export class RateLimitError extends RedisToolkitError {
+  declare readonly code: RateLimitErrorCode;
+  constructor(code: RateLimitErrorCode, message: string, options?: ErrorOptions) { super(code, message, options); this.name = 'RateLimitError'; }
+}
 
 /** Normalized configuration for the fixed-window rate limiter. */
 export interface RateLimitConfig extends ModuleConfigBase {
