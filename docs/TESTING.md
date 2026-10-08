@@ -14,6 +14,10 @@ The project separates deterministic unit/security tests from real Redis tests.
 8. Cluster integration tests with multiple primaries/replicas, MOVED/ASK handling, resharding, and node failure.
 9. Load/performance tests using bounded concurrency.
 
+## The exports map
+
+`tests/consumer/` holds one consumer per importable path: `root.ts` for the root, and a file named for each subpath. Each imports from that path alone, by the package's own name. `tests/unit/subpaths.test.ts` compiles them, so they resolve through the `exports` map in `package.json` to the source each target is built from. A subpath that stops resolving, or a name a consumer uses that its path stops exporting, fails that suite with the compiler's own message. A name no consumer uses is not guarded, and the consumers compile against the source, not against the declarations a build emits. Adding a subpath means adding its consumer.
+
 ## Shared Redis safety
 
 Tests must use a unique namespace per run. Never use `FLUSHALL` or `FLUSHDB` against a shared Redis deployment.

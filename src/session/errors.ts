@@ -1,4 +1,4 @@
-import { RedisToolkitError } from '../redis/errors.js';
+import { RedisToolkitError } from '../redis/index.js';
 
 /** Stable machine-readable error codes emitted by the session subsystem. */
 export type SessionErrorCode =

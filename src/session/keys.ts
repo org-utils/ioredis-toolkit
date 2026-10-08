@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { safeUserTag } from '../redis/cluster.js';
-import { KeyStrategy } from '../redis/keys.js';
+import { safeUserTag, KeyStrategy } from '../redis/index.js';
 
 /** Centralizes session Redis key construction and user hash-tagging. */
 export class SessionKeyStrategy {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { moduleConfigSchema, parseConfig } from '../redis/config-base.js';
+import { moduleConfigSchema, parseConfig } from '../redis/index.js';
 import { LockError, type LockConfig } from './types.js';
 /** Runtime schema for distributed-lock configuration. */
 export const LockConfigSchema = moduleConfigSchema('lock').extend({ defaultTtl: z.number().int().positive().default(30), maxTtl: z.number().int().positive().default(300) })

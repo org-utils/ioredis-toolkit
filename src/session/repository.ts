@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import type { RedisClientWrapper } from '../redis/index.js';
 import { SessionReplayError, SessionRotationError, SessionStorageError } from './errors.js';
 import type { SessionConfig } from './config.js';
 import type { SessionKeyStrategy } from './keys.js';

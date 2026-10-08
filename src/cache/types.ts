@@ -1,5 +1,4 @@
-import type { ModuleConfigBase } from '../redis/config-base.js';
-import { RedisToolkitError } from '../redis/errors.js';
+import { RedisToolkitError, type ModuleConfigBase } from '../redis/index.js';
 
 /** Stable machine-readable error codes emitted by the cache. */
 export type CacheErrorCode = 'CACHE_CONFIGURATION' | 'CACHE_INPUT' | 'CACHE_SERIALIZATION' | 'CACHE_LIMIT';

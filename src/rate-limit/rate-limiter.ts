@@ -1,7 +1,4 @@
-import { RedisClock } from '../redis/clock.js';
-import { KeyStrategy } from '../redis/keys.js';
-import { ScriptRegistry } from '../redis/scripts.js';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import { RedisClock, KeyStrategy, ScriptRegistry, type RedisClientWrapper } from '../redis/index.js';
 import { RateLimitError, type RateLimitConfig, type RateLimitResult } from './types.js';
 
 const SCRIPT_SOURCES = {

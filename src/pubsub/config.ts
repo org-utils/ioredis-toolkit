@@ -1,4 +1,4 @@
-import { byteCap, moduleConfigSchema, parseConfig } from '../redis/config-base.js';
+import { byteCap, moduleConfigSchema, parseConfig } from '../redis/index.js';
 import { PubSubError, type PubSubConfig } from './types.js';
 /** Runtime schema for Pub/Sub configuration. */
 export const PubSubConfigSchema = moduleConfigSchema('events').extend({ maxMessageBytes: byteCap() });

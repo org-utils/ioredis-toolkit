@@ -14,28 +14,28 @@
       "import": "./dist/index.js"
     },
     "./cache": {
-      "types": "./dist/cache/cache.d.ts",
-      "import": "./dist/cache/cache.js"
+      "types": "./dist/cache/index.d.ts",
+      "import": "./dist/cache/index.js"
     },
     "./lock": {
-      "types": "./dist/lock/lock.d.ts",
-      "import": "./dist/lock/lock.js"
+      "types": "./dist/lock/index.d.ts",
+      "import": "./dist/lock/index.js"
     },
     "./rate-limit": {
-      "types": "./dist/rate-limit/rate-limiter.d.ts",
-      "import": "./dist/rate-limit/rate-limiter.js"
+      "types": "./dist/rate-limit/index.d.ts",
+      "import": "./dist/rate-limit/index.js"
     },
     "./pubsub": {
-      "types": "./dist/pubsub/pubsub.d.ts",
-      "import": "./dist/pubsub/pubsub.js"
+      "types": "./dist/pubsub/index.d.ts",
+      "import": "./dist/pubsub/index.js"
     },
     "./streams": {
-      "types": "./dist/streams/streams.d.ts",
-      "import": "./dist/streams/streams.js"
+      "types": "./dist/streams/index.d.ts",
+      "import": "./dist/streams/index.js"
     },
-    "./sessions": {
-      "types": "./dist/session/manager.d.ts",
-      "import": "./dist/session/manager.js"
+    "./session": {
+      "types": "./dist/session/index.d.ts",
+      "import": "./dist/session/index.js"
     },
     "./package.json": "./package.json"
   },

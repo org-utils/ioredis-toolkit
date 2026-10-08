@@ -32,6 +32,10 @@ _Avoid_: API, exports (both describe the mechanism, not the entitlement)
 Anything reachable in the source but not part of the public surface. Being importable is not the same as being supported; internals may change in any release.
 _Avoid_: private, experimental
 
+**Entry point**:
+The one file through which a module is imported: `src/<module>/index.ts`, exporting the module's class together with its public types. Every subpath in the exports map resolves to one; the kernel's serves the package only and has no subpath.
+_Avoid_: barrel (there is one barrel, the root), main file, index
+
 ### Keys and time
 
 **Namespace**:

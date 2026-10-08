@@ -1,6 +1,5 @@
 import { Cluster, type Redis } from 'ioredis';
-import { KeyStrategy } from '../redis/keys.js';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import { KeyStrategy, type RedisClientWrapper } from '../redis/index.js';
 import { PubSubError, type PubSubConfig, type PubSubMessage, type Subscription } from './types.js';
 
 /** JSON Pub/Sub abstraction using a dedicated subscriber connection. */

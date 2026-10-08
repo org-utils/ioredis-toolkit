@@ -1,5 +1,4 @@
-import { KeyStrategy } from '../redis/keys.js';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import { KeyStrategy, type RedisClientWrapper } from '../redis/index.js';
 import { CacheError, type CacheConfig, type CacheResult, type CacheSetOptions } from './types.js';
 
 /** JSON-based, namespaced Redis cache with TTL and conditional writes. */
