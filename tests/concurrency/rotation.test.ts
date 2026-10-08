@@ -1,12 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { createSessionManagerFromRedis, SessionReplayError } from '../../src/index.js';
-import { connectionConfig, redisFixture, redisUrl } from '../support/redis.js';
+import type { SessionManager } from '../../src/index.js';
+import { keyManager } from '../support/key-manager.js';
+import { connectClient, connectionConfig, redisFixture, redisUrl } from '../support/redis.js';
 
 describe.skipIf(!redisUrl)('concurrent rotation', () => {
   const redis = redisFixture();
 
-  it('lets exactly one of several simultaneous rotations of a credential succeed', async () => {
-    const { manager } = createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace: redis.newNamespace() });
+  function sessionsIn(storage: 'plain' | 'encrypted'): SessionManager {
+    const namespace = redis.newNamespace();
+    return storage === 'encrypted'
+      ? connectClient({ sessions: { enabled: true, namespace, encryption: { enabled: true } } }, { encryptionKeyManager: keyManager() }).sessions
+      : createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace }).manager;
+  }
+
+  it.each(['plain', 'encrypted'] as const)('lets exactly one of several simultaneous rotations of a credential succeed in %s storage', async storage => {
+    const manager = sessionsIn(storage);
     const created = await manager.create({ userId: 'integration-user' });
 
     const outcomes = await Promise.allSettled(Array.from({ length: 8 }, () => manager.rotate(created.token)));
