@@ -1,14 +1,9 @@
-import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createSessionManagerFromRedis, SessionSerializationError } from '../../src/index.js';
 import type { KeyManager, SessionConfig, SessionManager } from '../../src/index.js';
 import { hashSlot } from '../support/hash-slot.js';
 import { connectClient, connectionConfig, redisFixture, redisUrl } from '../support/redis.js';
-
-function keyManager(): KeyManager {
-  const key = randomBytes(32);
-  return { current: () => ({ version: '1', key }), get: version => (version === '1' ? key : undefined) };
-}
+import { keyManager } from '../support/key-manager.js';
 
 /** The secret half of an opaque credential; the other half is the JTI, which is stored by design. */
 function secretOf(token: string): string { return token.slice(token.indexOf('.') + 1); }
@@ -30,24 +25,53 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     return holding[0]!;
   }
 
-  it('creates, validates, touches, rotates, revokes and destroys a session', async () => {
-    const { manager } = createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace: redis.newNamespace(), rolling: true, touchInterval: 0, ttl: 600, idleTimeout: 300, absoluteTimeout: 600 });
+  it.each(['plain', 'encrypted'] as const)('creates, validates, touches, updates, rotates, revokes and destroys a session in %s storage', async storage => {
+    const namespace = redis.newNamespace();
+    const lifetime = { rolling: true, touchInterval: 0, ttl: 600, idleTimeout: 300, absoluteTimeout: 600 };
+    const manager = storage === 'encrypted'
+      ? sessionsIn(namespace, { ...lifetime, encryption: { enabled: true } }, keyManager())
+      : createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace, ...lifetime }).manager;
+    /** Whatever wrote a record last, encrypted storage must not leave its user readable in Redis. */
+    async function expectStoredAsConfigured(): Promise<void> {
+      const stored = await redis.storedUnder(namespace);
+      if (storage === 'encrypted') expect(stored).not.toContain('integration-user');
+      else expect(stored).toContain('integration-user');
+    }
+
     const created = await manager.create({ userId: 'integration-user' });
     expect(await manager.validate(created.token)).toEqual({ valid: true, session: created.session });
+    await expectStoredAsConfigured();
 
     await manager.touch(created.token);
     expect((await manager.get(created.token)).version).toBe(created.session.version + 1);
+    await expectStoredAsConfigured();
+
+    // Text outside ASCII is stored as several bytes, which the later writes must still recognise as unchanged.
+    const updated = await manager.update(created.token, { metadata: { plan: 'pro', name: 'Zoë 🙂' } });
+    expect(updated.version).toBe(created.session.version + 2);
+    expect(await manager.get(created.token)).toEqual(updated);
+    await expectStoredAsConfigured();
 
     const rotated = await manager.rotate(created.token);
+    expect(rotated.session.metadata).toEqual({ plan: 'pro', name: 'Zoë 🙂' });
     expect(rotated.previousJti).toBe(created.session.jti);
     expect(await manager.validate(created.token)).toEqual({ valid: false, reason: 'consumed' });
     expect((await manager.validate(rotated.token)).valid).toBe(true);
+    await expectStoredAsConfigured();
 
     await manager.revoke(rotated.token);
     expect(await manager.validate(rotated.token)).toEqual({ valid: false, reason: 'revoked' });
+    await expectStoredAsConfigured();
 
     await manager.destroy(rotated.token);
     expect(await manager.validate(rotated.token)).toEqual({ valid: false, reason: 'not_found' });
+  });
+
+  it('leaves a session unwritten when touched inside the touch interval', async () => {
+    const sessions = sessionsIn(redis.newNamespace(), { touchInterval: 60, idleTimeout: 300 });
+    const created = await sessions.create({ userId: 'integration-user' });
+    await sessions.touch(created.token);
+    expect(await sessions.get(created.token)).toEqual(created.session);
   });
 
   it('issues a distinct credential with at least 256 bits of secret for each session', async () => {
@@ -72,9 +96,9 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     expect(stored).not.toContain(secretOf(created.token));
   });
 
-  it('never persists the raw credential of a rotated session or of its successor', async () => {
+  it.each(['plain', 'encrypted'] as const)('never persists the raw credential of a rotated session or of its successor in %s storage', async storage => {
     const namespace = redis.newNamespace();
-    const sessions = sessionsIn(namespace);
+    const sessions = storage === 'encrypted' ? sessionsIn(namespace, { encryption: { enabled: true } }, keyManager()) : sessionsIn(namespace);
     const created = await sessions.create({ userId: 'integration-user' });
     const rotated = await sessions.rotate(created.token);
 

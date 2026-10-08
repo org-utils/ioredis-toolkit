@@ -8,7 +8,7 @@
 | Session fixation | Login/session identity | Fresh random token creation and rotation | Host auth flow must replace pre-auth session after authentication |
 | Replay after rotation | Refresh/session credential | Atomic predecessor consumption | Rotation is non-idempotent; test concurrent rotate |
 | Replay after logout | Session state | revoke/destroy + index checks | A request already authorized before logout may complete; authorization transaction boundaries remain application-specific |
-| Concurrent attacker requests | Session state | Lua state transitions and version checks | Test simultaneous touch/update/rotate |
+| Concurrent attacker requests | Session state | Compare-and-set state transitions and version checks | Test simultaneous touch/update/rotate |
 | Redis outage | Authentication state | Fail closed; storage errors distinct from invalid sessions | Application decides 401 vs 503; never fail open |
 | Uncaught connection-error crash | Availability (whole process) | Default no-op `'error'` listener attached to every Redis connection, including the Pub/Sub subscriber connection | The default listener only prevents the crash; applications needing alerting must still attach their own `'error'` listener on the connection |
 | Malformed cached/published payload | Availability | `RedisCache.get()` throws a typed `CacheError`; `RedisPubSub` silently drops an unparseable message | Neither crashes the process; a cache read failure still surfaces as an error to the caller rather than a silent miss |
