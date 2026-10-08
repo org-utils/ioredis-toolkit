@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { byteCap, moduleConfigSchema, parseConfig } from '../redis/config-base.js';
+import { byteCap, moduleConfigSchema, parseConfig } from '../redis/index.js';
 import { CacheError, type CacheConfig } from './types.js';
 
 /** Runtime schema for cache configuration. */

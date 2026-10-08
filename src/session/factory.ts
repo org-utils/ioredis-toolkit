@@ -1,6 +1,4 @@
-import type { RedisClientWrapper } from '../redis/wrapper.js';
-import { createRedisConnection } from '../redis/client.js';
-import type { RedisConfig } from '../redis/types.js';
+import { RedisClientWrapper, createRedisConnection, type RedisConfig } from '../redis/index.js';
 import { parseSessionConfig, type SessionConfig } from './config.js';
 import { SessionKeyStrategy } from './keys.js';
 import { SessionSerializer } from './serializer.js';
@@ -11,7 +9,6 @@ import { SessionManager } from './manager.js';
 import { SessionTokenManager } from './token.js';
 import type { KeyManager, SessionMetrics } from './types.js';
 import { SessionConfigurationError } from './errors.js';
-import { RedisClientWrapper as Wrapper } from '../redis/wrapper.js';
 
 /** Dependencies and configuration required to construct a session manager. */
 export interface CreateSessionManagerOptions { redis: RedisClientWrapper; config: SessionConfig; encryptionKeyManager?: KeyManager; metrics?: SessionMetrics; }
@@ -30,6 +27,6 @@ export function createSessionManager(options: CreateSessionManagerOptions): Sess
 /** Creates a session manager and shared Redis wrapper from separate configuration objects. */
 export function createSessionManagerFromRedis(redisConfig: RedisConfig, sessionConfig: unknown): { manager: SessionManager; redis: RedisClientWrapper; config: SessionConfig } {
   const config = parseSessionConfig(sessionConfig);
-  const redis = new Wrapper(createRedisConnection(redisConfig));
+  const redis = new RedisClientWrapper(createRedisConnection(redisConfig));
   return { manager: createSessionManager({ redis, config }), redis, config };
 }

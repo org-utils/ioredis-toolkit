@@ -1,6 +1,5 @@
 import { SessionStorageError } from './errors.js';
-import { ScriptRegistry } from '../redis/scripts.js';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import { ScriptRegistry, type RedisClientWrapper } from '../redis/index.js';
 import { SCRIPT_SOURCES } from './script-sources.js';
 
 /** Names of versioned Lua scripts used by the session repository. */

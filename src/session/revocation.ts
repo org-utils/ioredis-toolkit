@@ -1,4 +1,4 @@
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import type { RedisClientWrapper } from '../redis/index.js';
 import { SessionStorageError } from './errors.js';
 import type { SessionKeyStrategy } from './keys.js';
 

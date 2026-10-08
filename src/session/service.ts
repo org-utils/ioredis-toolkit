@@ -4,8 +4,7 @@ import { NoopMetrics } from './metrics.js';
 import type { SessionRepository } from './repository.js';
 import type { SessionTokenManager } from './token.js';
 import type { CreateSessionInput, CreatedSession, RotationResult, SessionMetrics, SessionPatch, SessionRecord, ValidationResult } from './types.js';
-import { RedisClock } from '../redis/clock.js';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import { RedisClock, type RedisClientWrapper } from '../redis/index.js';
 
 /** Dependencies required by {@link SessionService}. */
 export interface SessionServiceOptions { repository: SessionRepository; tokens: SessionTokenManager; redis: RedisClientWrapper; config: SessionConfig; metrics?: SessionMetrics; }

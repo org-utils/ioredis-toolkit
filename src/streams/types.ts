@@ -1,5 +1,4 @@
-import type { ModuleConfigBase } from '../redis/config-base.js';
-import { RedisToolkitError } from '../redis/errors.js';
+import { RedisToolkitError, type ModuleConfigBase } from '../redis/index.js';
 
 /** Stable machine-readable error codes emitted by Streams. */
 export type StreamsErrorCode = 'STREAMS_CONFIGURATION' | 'STREAMS_INPUT';

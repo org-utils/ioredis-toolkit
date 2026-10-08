@@ -1,4 +1,4 @@
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import type { RedisClientWrapper } from '../redis/index.js';
 import type { SessionHealth } from './types.js';
 /** Performs a lightweight Redis health check for session infrastructure. */
 export class SessionHealthProvider {

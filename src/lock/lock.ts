@@ -1,7 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { KeyStrategy } from '../redis/keys.js';
-import { ScriptRegistry } from '../redis/scripts.js';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import { KeyStrategy, ScriptRegistry, type RedisClientWrapper } from '../redis/index.js';
 import { LockError, type LockAcquireResult, type LockConfig } from './types.js';
 
 const SCRIPT_SOURCES = {

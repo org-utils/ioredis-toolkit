@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { byteCap, moduleConfigSchema, parseConfig } from "../redis/config-base.js";
+import { byteCap, moduleConfigSchema, parseConfig } from "../redis/index.js";
 import { SessionConfigurationError } from "./errors.js";
 
 /** Runtime schema for session configuration and security invariants. */

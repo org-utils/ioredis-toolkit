@@ -1,5 +1,4 @@
-import { KeyStrategy } from '../redis/keys.js';
-import type { RedisClientWrapper } from '../redis/wrapper.js';
+import { KeyStrategy, type RedisClientWrapper } from '../redis/index.js';
 import { StreamsError, type StreamEntry, type StreamReadOptions, type StreamsConfig } from './types.js';
 
 /** Redis Streams abstraction for append, consumer groups, reads and acknowledgements. */

@@ -82,6 +82,42 @@ try {
 
 Each module has its own class under that base — `SessionError` and its subclasses, `CacheError`, `LockError`, `RateLimitError`, `PubSubError`, `StreamsError`, and `RedisConfigurationError` for the connection and for a module used while disabled — and its usage guide lists the codes it can report. A failure reported by Redis or the connection is wrapped as `SESSION_STORAGE` inside a session operation; in the convenience wrappers it passes through as ioredis raised it.
 
+## Import paths
+
+The root import carries the client facade and every public name. Each module also has a subpath of its own, exporting its class together with the configuration, input, result and error types that go with it, so one import is enough to annotate what you pass to a module and what it hands back:
+
+| Import | What it exports |
+| --- | --- |
+| `ioredis-toolkit` | `createRedisClient`, `RedisClient`, the connection configuration types, `RedisToolkitError`, and everything below |
+| `ioredis-toolkit/session` | `SessionManager`, `createSessionManager`, `createSessionManagerFromRedis`, `parseSessionConfig`, the cookie helpers, the `Session*Error` classes, and the session types |
+| `ioredis-toolkit/cache` | `RedisCache`, `parseCacheConfig`, `CacheError`, and the cache types |
+| `ioredis-toolkit/lock` | `RedisLock`, `parseLockConfig`, `LockError`, and the lock types |
+| `ioredis-toolkit/rate-limit` | `RedisRateLimiter`, `parseRateLimitConfig`, `RateLimitError`, and the rate-limit types |
+| `ioredis-toolkit/pubsub` | `RedisPubSub`, `parsePubSubConfig`, `PubSubError`, and the Pub/Sub types |
+| `ioredis-toolkit/streams` | `RedisStreams`, `parseStreamsConfig`, `StreamsError`, and the Streams types |
+
+```ts
+import type { CacheConfig, CacheResult, RedisCache } from 'ioredis-toolkit/cache';
+
+const cacheConfig: Partial<CacheConfig> = { enabled: true, namespace: 'app:cache', defaultTtl: 300 };
+
+async function readUser(cache: RedisCache, id: string): Promise<CacheResult<User>> {
+  return cache.get<User>(`user:${id}`);
+}
+```
+
+The session subpath also constructs what it exports, without the root import:
+
+```ts
+import { createSessionManagerFromRedis, type RedisConfig, type SessionConfig } from 'ioredis-toolkit/session';
+
+const connection: RedisConfig = { mode: 'standalone', host: '127.0.0.1', port: 6379 };
+const sessionConfig: Partial<SessionConfig> = { enabled: true, namespace: 'app:session' };
+const { manager } = createSessionManagerFromRedis(connection, sessionConfig);
+```
+
+Only these paths are importable; a file inside `dist/` is not.
+
 ## Documentation
 
 Each module has a complete usage guide with configuration tables, types, method arguments, return values, semantics, edge cases, and multiple examples:

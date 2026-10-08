@@ -1,26 +1,10 @@
-import type { RedisConfig } from './redis/types.js';
-import { createRedisConnection } from './redis/client.js';
-import { RedisClientWrapper } from './redis/wrapper.js';
-import { RedisConfigurationError } from './redis/errors.js';
-import { parseCacheConfig } from './cache/config.js';
-import { RedisCache } from './cache/cache.js';
-import type { CacheConfig } from './cache/types.js';
-import { parseLockConfig } from './lock/config.js';
-import { RedisLock } from './lock/lock.js';
-import type { LockConfig } from './lock/types.js';
-import { parseRateLimitConfig } from './rate-limit/config.js';
-import { RedisRateLimiter } from './rate-limit/rate-limiter.js';
-import type { RateLimitConfig } from './rate-limit/types.js';
-import { parsePubSubConfig } from './pubsub/config.js';
-import { RedisPubSub } from './pubsub/pubsub.js';
-import type { PubSubConfig } from './pubsub/types.js';
-import { parseStreamsConfig } from './streams/config.js';
-import { RedisStreams } from './streams/streams.js';
-import type { StreamsConfig } from './streams/types.js';
-import { parseSessionConfig, type SessionConfig } from './session/config.js';
-import { createSessionManager, type CreateSessionManagerOptions } from './session/factory.js';
-import type { KeyManager, SessionMetrics } from './session/types.js';
-import type { SessionManager } from './session/manager.js';
+import { RedisClientWrapper, RedisConfigurationError, createRedisConnection, type RedisConfig } from './redis/index.js';
+import { RedisCache, parseCacheConfig, type CacheConfig } from './cache/index.js';
+import { RedisLock, parseLockConfig, type LockConfig } from './lock/index.js';
+import { RedisRateLimiter, parseRateLimitConfig, type RateLimitConfig } from './rate-limit/index.js';
+import { RedisPubSub, parsePubSubConfig, type PubSubConfig } from './pubsub/index.js';
+import { RedisStreams, parseStreamsConfig, type StreamsConfig } from './streams/index.js';
+import { createSessionManager, parseSessionConfig, type CreateSessionManagerOptions, type KeyManager, type SessionConfig, type SessionManager, type SessionMetrics } from './session/index.js';
 import type { ModuleConfigMode } from './modules-config.js';
 
 /** Complete package configuration. Module sections are optional and disabled by default. */
