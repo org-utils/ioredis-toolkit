@@ -6,7 +6,7 @@ This package is authored for TypeScript strict mode with ESM and Node.js 22+.
 
 - No `any` is used in package source modules.
 - Public module APIs use explicit exported types.
-- Redis internals are hidden behind `RedisClientWrapper`.
+- Redis internals are hidden behind the client facade, `RedisClient`.
 - Pub/Sub uses a type-only import for `Redis`, which is required when `verbatimModuleSyntax` is enabled.
 - Optional properties are authored to work with `exactOptionalPropertyTypes`.
 - Runtime configuration is validated before it reaches module constructors.

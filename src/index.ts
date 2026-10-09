@@ -38,25 +38,3 @@ export type { PubSubConfig, PubSubMessage, Subscription, PubSubErrorCode } from 
 
 export { RedisStreams, parseStreamsConfig, StreamsError } from './streams/index.js';
 export type { StreamsConfig, StreamEntry, StreamReadOptions, StreamsErrorCode } from './streams/index.js';
-
-// Internal under ADR-0003, and still exported until the public surface narrows. The kernel's entry point
-// serves the package, so it carries the kernel's internals. An entry point behind a subpath carries none,
-// so the root barrel reaches past those for the names below and for nothing else.
-export { RedisClientWrapper, redisHashSlot, safeUserTag, assertSameSlot, RedisConnectionConfigSchema } from './redis/index.js';
-/* eslint-disable boundaries/entry-point */
-export { SessionService } from './session/service.js';
-export { SessionRepository } from './session/repository.js';
-export { SessionTokenManager } from './session/token.js';
-export { SessionSerializer } from './session/serializer.js';
-export { SessionKeyStrategy } from './session/keys.js';
-export { SessionScriptRegistry } from './session/scripts.js';
-export { RedisRevocationStore } from './session/revocation.js';
-export { SessionHealthProvider } from './session/health.js';
-export { NoopMetrics } from './session/metrics.js';
-export { SessionConfigSchema } from './session/config.js';
-export type { SessionHealth } from './session/types.js';
-export { CacheConfigSchema } from './cache/config.js';
-export { LockConfigSchema } from './lock/config.js';
-export { RateLimitConfigSchema } from './rate-limit/config.js';
-export { PubSubConfigSchema } from './pubsub/config.js';
-export { StreamsConfigSchema } from './streams/config.js';

@@ -41,7 +41,6 @@
   },
   "files": [
     "dist",
-    "src/scripts",
     "docs",
     "LICENSE",
     "README.md",

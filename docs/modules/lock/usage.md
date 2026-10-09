@@ -21,7 +21,7 @@ const redis = createRedisClient({
 
 | Option | Type | Default | Description |
 |---|---|---:|---|
-| `enabled` | `boolean` | `false` | Enables the module. `redis.lock` throws `RedisConfigurationError` while disabled; `new RedisLock(...)` remains directly constructible either way. |
+| `enabled` | `boolean` | `false` | Enables the module. `redis.lock` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `lock` | Namespace: the first segment of every lock key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `defaultTtl` | `number` | `30` | Default lease in seconds. Must not exceed `maxTtl`. |
 | `maxTtl` | `number` | `300` | Maximum permitted lease. |

@@ -26,7 +26,7 @@ const redis = createRedisClient({
 
 | Option | Type | Default | Description |
 |---|---|---:|---|
-| `enabled` | `boolean` | `false` | Enables the module. `redis.rateLimiter` throws `RedisConfigurationError` while disabled; `new RedisRateLimiter(...)` remains directly constructible either way. |
+| `enabled` | `boolean` | `false` | Enables the module. `redis.rateLimiter` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `rate-limit` | Namespace: the first segment of every counter key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `windowSeconds` | `number` | `60` | Fixed-window duration. |
 | `maxRequests` | `number` | `100` | Maximum units per window. |

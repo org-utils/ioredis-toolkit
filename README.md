@@ -118,6 +118,8 @@ const { manager } = createSessionManagerFromRedis(connection, sessionConfig);
 
 Only these paths are importable; a file inside `dist/` is not.
 
+What these paths export is the whole public surface: the client facade and the connection types, the module classes, their configuration, input and result types, the cookie helpers, the error hierarchy and its code unions, the factory functions and the `parse*Config` functions. Everything else is internal and may change in any release: the classes the client facade constructs on your behalf (the session repository, service, serializer, key strategy, token manager and script registry, and the Redis command wrapper), the validation schema objects, and the cluster hash-slot helpers. A module is obtained from `createRedisClient` or a session factory function, never constructed directly.
+
 ## Documentation
 
 Each module has a complete usage guide with configuration tables, types, method arguments, return values, semantics, edge cases, and multiple examples:

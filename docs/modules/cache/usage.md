@@ -1,6 +1,6 @@
 # Cache Module — Complete Usage Guide
 
-`RedisCache` is a namespaced JSON cache built on the package's shared `RedisClientWrapper`. It supports TTLs, conditional writes, bounded value sizes, and cluster-aware invalidation.
+`RedisCache` is a namespaced JSON cache built on the package's shared Redis client. It supports TTLs, conditional writes, bounded value sizes, and cluster-aware invalidation.
 
 ## 1. Setup
 
@@ -28,7 +28,7 @@ The module uses the same Redis connection as the rest of the package. Do not cre
 
 | Option | Type | Default | Description |
 |---|---|---:|---|
-| `enabled` | `boolean` | `false` | Enables the module. `redis.cache` throws `RedisConfigurationError` while disabled; `new RedisCache(...)` remains directly constructible either way. |
+| `enabled` | `boolean` | `false` | Enables the module. `redis.cache` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `cache` | Namespace: the first segment of every cache key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `defaultTtl` | `number` | `300` | Default TTL in seconds. |
 | `maxValueBytes` | `number` | `1048576` | Maximum UTF-8 encoded JSON size. |

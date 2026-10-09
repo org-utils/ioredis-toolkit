@@ -18,4 +18,4 @@ Fixed: types a consumer could receive but not name are now exported.
 - `ModuleConfigBase` (the `enabled` and `namespace` fields every module config shares), from the root
 - `RedisPipeline` and `ClusterFanoutOptions` (what the client's `pipeline()` returns and its cluster-aware commands take), from the root
 
-Nothing is removed from the root import, and no behaviour changes.
+This change removes nothing from the root import, and changes no behaviour.

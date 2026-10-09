@@ -6,10 +6,13 @@ import type { SessionKeyStrategy } from './keys.js';
  * Stores short-lived JTI revocation records.
  *
  * This is a standalone utility for credentials whose authorization model is
- * JTI-based (e.g. externally issued JWTs) — see docs/README-API.md. It is
+ * JTI-based (e.g. externally issued JWTs). It is
  * intentionally *not* wired into {@link SessionService}: this package's own
  * opaque sessions treat session state itself as the source of truth, and
  * deliberately avoid an extra revocation-key lookup on every `validate()` call.
+ *
+ * Internal under ADR-0003, and nothing in the package constructs it, so it has
+ * no path from the public surface until the client facade offers one.
  */
 export class RedisRevocationStore {
   /** Creates a revocation store using the shared Redis client and session key strategy. */

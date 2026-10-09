@@ -21,7 +21,7 @@ const redis = createRedisClient({
 
 | Option | Type | Default | Description |
 |---|---|---:|---|
-| `enabled` | `boolean` | `false` | Enables the module. `redis.streams` throws `RedisConfigurationError` while disabled; `new RedisStreams(...)` remains directly constructible either way. |
+| `enabled` | `boolean` | `false` | Enables the module. `redis.streams` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `stream` | Namespace: the first segment of every stream key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
 | `maxEntries` | `number` | `100000` | Approximate retained entry limit used by `add()`. |
 | `blockMs` | `number` | `5000` | Default blocking duration applied to `read()` whenever a call does not pass its own `blockMs`. |

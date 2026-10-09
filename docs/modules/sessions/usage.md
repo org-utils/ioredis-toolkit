@@ -226,8 +226,6 @@ Session records and per-user indexes use a user-derived Redis hash tag so operat
 
 Never log raw session tokens. Do not put them into metrics labels, traces, exception messages, or persistent application logs.
 
-`RedisRevocationStore` is a separate, standalone utility for credentials whose authorization model is JTI-based (such as externally issued JWTs) — see [docs/README-API.md](../../README-API.md). It is intentionally **not** consulted by `SessionService`: this module's opaque sessions treat session state itself as the source of truth and deliberately avoid an extra revocation-key lookup on every `validate()` call.
-
 ## Errors
 
 All typed errors extend `SessionError`, which extends the package-wide `RedisToolkitError`, and carry a stable `code`:
@@ -251,7 +249,7 @@ All typed errors extend `SessionError`, which extends the package-wide `RedisToo
 
 ## Metrics
 
-`SessionService` accepts an optional `metrics: SessionMetrics` sink (via `createSessionManager({ ..., metrics })` or `createRedisClient(config, { metrics })`) and defaults to a no-op implementation (`NoopMetrics`) when none is supplied. When configured, it receives `increment()` calls for `session.created`, `session.validate` (labeled `result: 'valid' | 'invalid'`, plus `reason` on the invalid path), `session.rotated`, `session.revoked`, and `session.destroyed`.
+The session manager accepts an optional `metrics: SessionMetrics` sink (via `createSessionManager({ ..., metrics })` or `createRedisClient(config, { metrics })`) and records nothing when none is supplied. When configured, it receives `increment()` calls for `session.created`, `session.validate` (labeled `result: 'valid' | 'invalid'`, plus `reason` on the invalid path), `session.rotated`, `session.revoked`, and `session.destroyed`.
 
 ## Unified configuration overrides
 
