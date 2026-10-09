@@ -3,11 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
+/** Where the exports map sends an import of one path: the declarations, and the code they describe. */
+interface ExportTarget { types: string; import: string; }
+
 export const root = fileURLToPath(new URL('../..', import.meta.url));
-export const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as { name: string; exports: Record<string, { types: string; import: string }> };
+export const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as { name: string; main: string; types: string; files: string[]; exports: Record<string, string | ExportTarget> };
 
 /** What the exports map makes importable, other than the manifest itself: the root, and a subpath per module. */
-export const exported = Object.entries(manifest.exports).filter(([subpath]) => subpath !== './package.json');
+export const exported = Object.entries(manifest.exports).filter((entry): entry is [string, ExportTarget] => typeof entry[1] !== 'string');
 /** The specifier a consumer writes for each: the package name, alone or followed by a subpath. */
 export const specifiers = exported.map(([subpath]) => path.posix.join(manifest.name, subpath));
 export const subpathSpecifiers = specifiers.filter(specifier => specifier !== manifest.name);
