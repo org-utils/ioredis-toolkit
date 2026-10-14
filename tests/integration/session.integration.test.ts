@@ -386,6 +386,17 @@ describeOnEachTopology('sessions against real Redis', redis => {
       expect(await sessions.validate(stale.token)).toEqual({ valid: false, reason: 'invalid' });
     });
 
+    it.each([Number.NaN, -1, 1.5])('rejects %s as the version a session is created with, and stores nothing', async version => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      await expectPackageError(() => sessions.create({ userId: 'integration-user', securityVersion: version }), SessionInvalidError, 'SESSION_INVALID');
+      expect(await redis.keysUnder(namespace)).toEqual([]);
+
+      // Nothing was stored for the user, so the next create() with a valid version stores that one.
+      const created = await sessions.create({ userId: 'integration-user', securityVersion: 2 });
+      expect((await sessions.validate(created.token)).valid).toBe(true);
+    });
+
     it('invalidates sessions created before a bump', async () => {
       const sessions = sessionsIn(redis.newNamespace(), { securityVersionEnabled: true });
       const before = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
@@ -432,10 +443,21 @@ describeOnEachTopology('sessions against real Redis', redis => {
       for (const value of ['1.2.3.4', 'agent/1.0', 'device-1']) expect(stored).not.toContain(value);
     });
 
-    it('refuses a user agent longer than create() accepts', async () => {
-      const sessions = sessionsIn(redis.newNamespace(), { storeUserAgent: true });
+    it.each([
+      { field: 'deviceId', patch: { deviceId: 'a'.repeat(257) } },
+      { field: 'ipAddress', patch: { ipAddress: 'a'.repeat(129) } },
+      { field: 'userAgent', patch: { userAgent: 'a'.repeat(1025) } },
+      { field: 'metadata', patch: { metadata: { note: 'a'.repeat(64) } } },
+    ])('refuses $field larger than create() accepts, and leaves the record as stored', async ({ patch }) => {
+      const namespace = redis.newNamespace();
+      const config = { storeDeviceId: true, storeIpAddress: true, storeUserAgent: true, maxMetadataBytes: 64 };
+      const sessions = sessionsIn(namespace, config);
+      await expectPackageError(() => sessions.create({ userId: 'integration-user', ...patch }), SessionInvalidError, 'SESSION_INVALID');
       const { token } = await sessions.create({ userId: 'integration-user' });
-      await expectPackageError(() => sessions.update(token, { userAgent: 'a'.repeat(1025) }), SessionInvalidError, 'SESSION_INVALID');
+      const stored = await redis.storedUnder(namespace);
+
+      await expectPackageError(() => sessions.update(token, patch), SessionInvalidError, 'SESSION_INVALID');
+      expect(await redis.storedUnder(namespace)).toBe(stored);
     });
   });
 
@@ -466,17 +488,29 @@ describeOnEachTopology('sessions against real Redis', redis => {
     });
   });
 
-  it('lists only sessions that have not passed any of their expiries', async () => {
+  it.each(['expiresAt', 'idleExpiresAt', 'absoluteExpiresAt'] as const)('lists only sessions that have not passed their %s', async expiry => {
     const namespace = redis.newNamespace();
-    const sessions = sessionsIn(namespace, { idleTimeout: 300 });
+    const sessions = sessionsIn(namespace, { idleTimeout: 300, absoluteTimeout: 600, ttl: 600 });
     const live = await sessions.create({ userId: 'integration-user' });
-    const idle = await sessions.create({ userId: 'integration-user' });
+    const expired = await sessions.create({ userId: 'integration-user' });
     // The record is the one key that names the session and carries the user's hash tag.
-    const [idleRecordKey] = (await redis.keysUnder(namespace)).filter(key => key.includes(idle.session.id) && key.includes('{'));
-    const lapsed = { ...idle.session, idleExpiresAt: idle.session.createdAt - 1 };
-    await redis.observer.set(idleRecordKey!, JSON.stringify({ v: 1, data: JSON.stringify(lapsed) }), 'KEEPTTL');
+    const [expiredRecordKey] = (await redis.keysUnder(namespace)).filter(key => key.includes(expired.session.id) && key.includes('{'));
+    const lapsed = { ...expired.session, [expiry]: expired.session.createdAt - 1 };
+    await redis.observer.set(expiredRecordKey!, JSON.stringify({ v: 1, data: JSON.stringify(lapsed) }), 'KEEPTTL');
 
     expect(await sessions.list('integration-user')).toEqual([live.session]);
+  });
+
+  it('removes a session whose record is gone from the user\'s session set as it lists', async () => {
+    const namespace = redis.newNamespace();
+    const sessions = sessionsIn(namespace);
+    const live = await sessions.create({ userId: 'integration-user' });
+    const gone = await sessions.create({ userId: 'integration-user' });
+    const [goneRecordKey] = (await redis.keysUnder(namespace)).filter(key => key.includes(gone.session.id) && key.includes('{'));
+    await redis.observer.del(goneRecordKey!);
+
+    expect(await sessions.list('integration-user')).toEqual([live.session]);
+    expect(await redis.observer.zrange(await sessionSetKey(namespace), 0, -1)).toEqual([live.session.id]);
   });
 
   describe('records that cannot be decoded', () => {

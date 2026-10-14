@@ -5,7 +5,7 @@
 export { createRedisConnection } from './client.js';
 export { closeConnection, containedReporter, reportConnectionErrors } from './lifecycle.js';
 export type { ErrorContext, ErrorReporter } from './lifecycle.js';
-export { RedisClientWrapper } from './wrapper.js';
+export { RedisClientWrapper, connectionClosedError } from './wrapper.js';
 export { RedisClock } from './clock.js';
 export { KeyStrategy } from './keys.js';
 export { ScriptRegistry } from './scripts.js';

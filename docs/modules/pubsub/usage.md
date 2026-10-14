@@ -1,6 +1,6 @@
 # Pub/Sub Module — Complete Usage Guide
 
-`RedisPubSub` provides JSON Pub/Sub with namespaced channels and a dedicated subscriber connection. Pub/Sub is ephemeral: messages are not persisted for offline subscribers.
+`RedisPubSub` provides JSON Pub/Sub with namespaced channels and a dedicated subscriber connection, opened by the first `subscribe()`; publishing alone never opens it. Pub/Sub is ephemeral: messages are not persisted for offline subscribers.
 
 ## Setup
 
@@ -87,7 +87,7 @@ redis.pubsub.fullChannel('orders.created');
 
 ## `close()`
 
-Closes the dedicated subscriber connection. It is idempotent. At application shutdown, prefer the client's own `close()`, which closes this connection together with every other one the client opened.
+Closes the dedicated subscriber connection, if a subscribe opened one. It is idempotent, and a `subscribe()` afterwards rejects instead of opening another. At application shutdown, prefer the client's own `close()`, which closes this connection together with every other one the client opened.
 
 ```ts
 process.on('SIGTERM', async () => {

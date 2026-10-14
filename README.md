@@ -45,9 +45,9 @@ const session = await redis.sessions.create({ userId: '42' });
 
 ## Shutdown and error visibility
 
-`close()` closes every connection the client opened: the shared connection, and the Pub/Sub subscriber connection if Pub/Sub was used. A connection that is up is quit, so commands already sent complete; one that is not is disconnected. It is idempotent and safe to call whichever modules were used, so it can sit in a generic shutdown hook.
+`close()` closes every connection the client opened: the shared connection, the Pub/Sub subscriber connection if Pub/Sub was used, and the connections blocking stream reads run on. A connection that is up is quit, so commands already sent complete; one that is not is disconnected. A stream reader is always disconnected, so a read still blocked ends at once. It is idempotent and safe to call whichever modules were used, so it can sit in a generic shutdown hook. Once it has been called the client opens no further connection. A Pub/Sub subscribe or a blocking stream read afterwards, whenever the module was first used, rejects with the `Connection is closed.` error ioredis gives a command on a closed connection; any other command fails as ioredis fails it.
 
-Errors the client cannot raise to a caller, such as a dropped connection, go to the `onError` hook passed when the client is created. The context names the source: `connection` for the shared connection, `subscriber` for the Pub/Sub subscriber connection.
+Errors the client cannot raise to a caller, such as a dropped connection, go to the `onError` hook passed when the client is created. The context names the source: `connection` for the shared connection, `subscriber` for the Pub/Sub subscriber connection, `stream-reader` for a connection blocking stream reads run on, `pubsub-handler` for a Pub/Sub handler that threw or rejected, or a message that was not JSON (with the logical `channel`), and `lock-release` for a release inside `lock.using()` that failed.
 
 ```ts
 const redis = createRedisClient(config, {
@@ -136,6 +136,8 @@ const connection: RedisConfig = { mode: 'standalone', host: '127.0.0.1', port: 6
 const sessionConfig: Partial<SessionConfig> = { enabled: true, namespace: 'app:session' };
 const { manager } = createSessionManagerFromRedis(connection, sessionConfig);
 ```
+
+Both configurations are validated before anything connects, so a mistyped `mode` or disabled sessions throw and leave no connection behind. This factory takes no key manager, so it refuses a configuration with encryption enabled; use `createRedisClient` with an `encryptionKeyManager` for encrypted sessions.
 
 Only these paths are importable; a file inside `dist/` is not.
 

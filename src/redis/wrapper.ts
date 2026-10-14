@@ -4,6 +4,12 @@ import { closeConnection } from './lifecycle.js';
 import type { ClusterFanoutOptions, RedisCommandClient, RedisConnection, RedisPipeline } from './types.js';
 export type { ClusterFanoutOptions } from './types.js';
 
+/**
+ * The error for work that would need a connection the package has closed: the one ioredis rejects a command on a closed
+ * connection with, so work after a close fails the same way whether or not it needed a new connection.
+ */
+export function connectionClosedError(): Error { return new Error('Connection is closed.'); }
+
 /** The most keys one DEL names, and the COUNT hint each SCAN page is asked for. */
 const DELETE_BATCH = 500;
 
@@ -14,6 +20,8 @@ const DELETE_BATCH = 500;
  * centralizes Cluster-aware multi-key behavior so higher-level modules remain topology agnostic.
  */
 export class RedisClientWrapper implements RedisCommandClient {
+  /** Whether {@link close} has been called, after which no connection is duplicated from this one. */
+  private closed = false;
   /** Creates a wrapper around an existing ioredis Redis or Cluster connection. */
   constructor(private readonly client: RedisConnection) {}
   /** Reads a string value. */
@@ -114,10 +122,16 @@ export class RedisClientWrapper implements RedisCommandClient {
   xlen(key: string): Promise<number> { return this.client.xlen(key); }
   /** Creates a pipeline. Command-level errors must be inspected in the returned tuples. */
   pipeline(): RedisPipeline { return this.client.pipeline() as unknown as RedisPipeline; }
-  /** Creates a dedicated duplicate connection for Pub/Sub consumers. */
-  duplicateConnection(): RedisConnection { return this.client.duplicate() as RedisConnection; }
+  /**
+   * Creates a dedicated duplicate connection, for a Pub/Sub subscriber or a stream reader. Once this wrapper is closed it
+   * throws instead, with the error ioredis gives a command on a closed connection, so nothing is opened that close() missed.
+   */
+  duplicateConnection(): RedisConnection {
+    if (this.closed) throw connectionClosedError();
+    return this.client.duplicate() as RedisConnection;
+  }
   /** Closes the wrapped connection: quit if it is up, disconnected otherwise. Idempotent. */
-  async close(): Promise<void> { await closeConnection(this.client); }
+  async close(): Promise<void> { this.closed = true; await closeConnection(this.client); }
 
   /** Reads multiple keys while preserving input order and grouping Cluster requests by slot. */
   async mgetClusterAware(keys: string[], options: ClusterFanoutOptions = {}): Promise<Array<string | null>> {

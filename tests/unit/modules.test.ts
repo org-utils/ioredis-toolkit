@@ -1,6 +1,8 @@
+import { createServer, type AddressInfo, type Socket } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { RedisConfigurationError, createRedisClient } from '../../src/index.js';
-import type { RedisClientConfig } from '../../src/index.js';
+import { RedisConfigurationError, SessionConfigurationError, createRedisClient, createSessionManagerFromRedis } from '../../src/index.js';
+import type { RedisClientConfig, RedisConfig } from '../../src/index.js';
 import { closedPort } from '../support/closed-port.js';
 import { expectPackageError } from '../support/errors.js';
 
@@ -86,5 +88,45 @@ describe('client configuration validation', () => {
     it('does not check the namespace of a disabled module', () => {
       expect(() => clientWith({ sessions: { enabled: true, namespace: 'app' }, cache: { enabled: false, namespace: 'app' } })).not.toThrow();
     });
+  });
+});
+
+describe('createSessionManagerFromRedis configuration validation', () => {
+  /** Runs `work` against a loopback port that accepts connections and counts them, so a test can tell whether anything connected. */
+  async function withListener(work: (port: number) => Promise<void>): Promise<number> {
+    const sockets: Socket[] = [];
+    const server = createServer(socket => { sockets.push(socket); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      await work((server.address() as AddressInfo).port);
+      // Long enough for a connection opened on the way to the failure to reach the listener.
+      await delay(100);
+      return sockets.length;
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => server.close(resolve));
+    }
+  }
+
+  it('rejects a mistyped mode without connecting', async () => {
+    const connections = await withListener(async port => {
+      const config = { mode: 'clustr', host: '127.0.0.1', port } as unknown as RedisConfig;
+      await expectPackageError(() => createSessionManagerFromRedis(config, { enabled: true }), RedisConfigurationError, 'REDIS_CONFIGURATION');
+    });
+    expect(connections).toBe(0);
+  });
+
+  it('rejects disabled sessions without connecting', async () => {
+    const connections = await withListener(async port => {
+      await expectPackageError(() => createSessionManagerFromRedis({ mode: 'standalone', host: '127.0.0.1', port }, {}), SessionConfigurationError, 'SESSION_CONFIGURATION');
+    });
+    expect(connections).toBe(0);
+  });
+
+  it('rejects encryption it has no key manager for without connecting', async () => {
+    const connections = await withListener(async port => {
+      await expectPackageError(() => createSessionManagerFromRedis({ mode: 'standalone', host: '127.0.0.1', port }, { enabled: true, encryption: { enabled: true } }), SessionConfigurationError, 'SESSION_CONFIGURATION');
+    });
+    expect(connections).toBe(0);
   });
 });
