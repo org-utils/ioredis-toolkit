@@ -42,6 +42,8 @@
   "files": [
     "dist",
     "docs",
+    "!docs/agents",
+    "!docs/ACCEPTANCE-REPORT.md",
     "LICENSE",
     "README.md",
     "CHANGELOG.md"

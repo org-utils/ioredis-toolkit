@@ -51,7 +51,7 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `idleTimeout` | `number` | unset | Optional rolling inactivity lifetime. |
 | `absoluteTimeout` | `number` | unset | Optional hard application lifetime. |
 | `touchInterval` | `number` | 60 | Minimum interval between rolling touch writes. |
-| `rolling` | `boolean` | `true` | Enables rolling idle expiration behavior. |
+| `rolling` | `boolean` | `true` | Enables rolling idle expiration behavior. A touch extends only the idle expiry, never the hard `ttl`. |
 | `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. The first `create()` for a user stores its version; see [`setSecurityVersion`](#setsecurityversionuserid-version). |
 | `maxSessionsPerUser` | `number` | 20 | Maximum indexed sessions per user. A `create()` over the limit evicts the oldest sessions, never the one it creates. `0` is unlimited. |
 | `maxMetadataBytes` | `number` | 8192 | Maximum metadata JSON size. |
@@ -115,6 +115,8 @@ Use this when the caller wants exception-based control flow rather than the disc
 ## `touch(token)`
 
 Applies rolling idle-expiration rules. Touches are throttled by `touchInterval` and are bounded by the absolute expiration.
+
+`rolling` extends only the idle expiry (`idleExpiresAt`), never the hard `ttl`. A session's `expiresAt`, which `create()` sets from `ttl` (or from `absoluteTimeout` if that comes sooner), and the Redis expiry of its record stay where they were however often it is touched, so even a session in constant use ends at `expiresAt`. A session created without an idle timeout has nothing for a touch to extend.
 
 ```ts
 await sessions.touch(token);

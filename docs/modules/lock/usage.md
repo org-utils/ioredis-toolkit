@@ -97,7 +97,9 @@ If acquisition fails, `using()` throws a `LockError` with code `LOCK_HELD` inste
 
 This is a lease, not a consensus protocol. If the process pauses longer than the TTL, another owner may acquire the lock. Choose TTLs that safely cover the critical section and extend them when necessary.
 
-Do not use the lock as proof that a database transaction committed. Prefer fencing tokens when an external resource requires strict stale-writer protection.
+The lock runs on a single Redis node: it is one key on the primary that owns it, not Redlock across independent nodes. Replication to replicas is asynchronous, so if the primary fails over before the lock key reaches a replica, the promoted replica does not hold it and a second caller can acquire the same lock while the first still believes it holds it. For that brief window two holders can exist.
+
+There is no fencing token. The ownership token `acquire()` returns is random, not monotonically increasing, so a resource cannot use it to reject writes from a holder whose lease has lapsed. Do not use the lock as proof that a database transaction committed. When an external resource requires strict stale-writer protection, issue fencing tokens from a store that guarantees them and have the resource check them.
 
 ## Errors
 
