@@ -164,6 +164,8 @@ Revocation is idempotent from the application's perspective. `revoke()` (and rot
 
 A revoked or rotated session's record is kept as a tombstone for the rest of its lifetime, capped at 300 seconds. Its token locator, the key that maps the credential to its user, is cut to expire with the tombstone. While the tombstone lasts, a rotated credential presented again validates as `consumed` (and `rotate()` throws `SessionReplayError`), and a revoked one as `revoked`. Once the tombstone has expired, both validate as `not_found` and none of their keys remain, however often a session is rotated.
 
+`revoke()` given a credential that rotation already consumed marks its tombstone `revoked`, so it validates as `revoked` rather than `consumed` from then on, and its tombstone's 300-second cap starts again. The session that replaced it stays active: to end every session of a user, use `revokeAll()`, or `setSecurityVersion()` with `securityVersionEnabled`.
+
 ## `destroy(token)`
 
 Permanently removes the session record, its token locator and its member of the user's session set.

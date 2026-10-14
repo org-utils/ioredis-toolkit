@@ -21,6 +21,7 @@ DELETED (physical cleanup)
 - Redis TTL may physically delete any state after its security usefulness ends.
 - `destroy` is physical deletion and idempotent.
 - `revoke` is logical denial and idempotent.
+- `revoke` of a credential that `rotate` already consumed rewrites its tombstone as `REVOKED` and restarts its expiry, still capped at 300 seconds, so that credential then validates as `revoked` rather than `consumed`. Its successor stays `ACTIVE`. Whether that should change is open in #81.
 - `rotate` atomically consumes the predecessor before successor creation.
 - A stale member of the user's session set cannot authenticate because validation requires active session state and current membership of the set.
 
