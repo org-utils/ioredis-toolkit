@@ -51,7 +51,7 @@ const subpathSurfaces: Record<string, Surface> = {
 const rootOnly: Surface = {
   values: ['createRedisClient', 'RedisClient', 'createRedisConnection', 'parseRedisConnectionConfig', 'RedisToolkitError', 'RedisConfigurationError'],
   types: [
-    'RedisClientConfig', 'RedisClientDependencies', 'ModuleConfigMode',
+    'RedisClientConfig', 'RedisClientDependencies', 'RedisErrorContext', 'RedisErrorSource', 'ModuleConfigMode',
     'RedisConfig', 'RedisMode', 'StandaloneRedisConfig', 'SentinelRedisConfig', 'ClusterRedisConfig',
     'RedisConnection', 'RedisCommandClient', 'RedisPipeline', 'ClusterFanoutOptions', 'ModuleConfigBase',
   ],

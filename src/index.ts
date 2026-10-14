@@ -3,7 +3,7 @@
  * Every name is listed, never a wildcard, so adding one to the public surface is a deliberate act.
  */
 export { createRedisClient, RedisClient } from './client-facade.js';
-export type { RedisClientConfig, RedisClientDependencies } from './client-facade.js';
+export type { RedisClientConfig, RedisClientDependencies, RedisErrorContext, RedisErrorSource } from './client-facade.js';
 export type { ModuleConfigMode } from './modules-config.js';
 
 export { createRedisConnection, parseRedisConnectionConfig, RedisToolkitError, RedisConfigurationError } from './redis/index.js';

@@ -56,7 +56,7 @@ The low-level Redis client already owns connection/reconnect behavior. A circuit
 
 ## Decision: every Redis connection gets a default `'error'` listener
 
-`Redis`/`Cluster` instances are Node `EventEmitter`s that throw an uncaught exception and crash the process when an `'error'` event fires with zero listeners. `createRedisConnection()` and `RedisPubSub`'s dedicated subscriber connection now both attach a no-op default listener so a connection drop can never crash the process by itself. This does not replace real observability: applications that need alerting on connection errors should still attach their own `'error'` listener on the connection object.
+`Redis`/`Cluster` instances are Node `EventEmitter`s that throw an uncaught exception and crash the process when an `'error'` event fires with zero listeners. Every connection the package opens therefore has a default listener, so a connection drop can never crash the process by itself. On the client facade that listener forwards to the application's `onError` hook (a `RedisClientDependencies` member) with a context naming the source — `connection` for the shared connection, `subscriber` for the Pub/Sub subscriber connection, and on Cluster the per-node errors under the same source. Without a hook, errors are dropped; a hook that throws or rejects is contained. `RedisClient.close()` closes every connection the facade opened.
 
 ## Decision: module `enabled` flags are enforced uniformly
 

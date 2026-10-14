@@ -1,7 +1,7 @@
 import { RedisToolkitError, createRedisClient, parseCacheConfig, parseRedisConnectionConfig, parseSessionConfig, serializeCookie } from 'ioredis-toolkit';
 import type {
   CacheConfig, ClusterFanoutOptions, ClusterRedisConfig, CookieOptions, InvalidReason, KeyManager, LockConfig, ModuleConfigBase, ModuleConfigMode,
-  PubSubConfig, RateLimitConfig, RedisCache, RedisClient, RedisClientConfig, RedisClientDependencies, RedisConfig, RedisLock, RedisPipeline,
+  PubSubConfig, RateLimitConfig, RedisCache, RedisClient, RedisClientConfig, RedisClientDependencies, RedisConfig, RedisErrorContext, RedisErrorSource, RedisLock, RedisPipeline,
   RedisPubSub, RedisRateLimiter, RedisStreams, SentinelRedisConfig, SessionConfig, SessionManager, SessionMetrics, StandaloneRedisConfig, StreamsConfig,
 } from 'ioredis-toolkit';
 
@@ -37,9 +37,19 @@ export async function countKeys(client: RedisClient, pattern: string): Promise<n
   return (await batch.exec())?.filter(([, exists]) => exists === 1).length ?? 0;
 }
 
+/** Where an error came from is nameable, so a hook can route it. */
+export function alertOn(error: unknown, context: RedisErrorContext): string {
+  const source: RedisErrorSource = context.source;
+  return `${source}${context.channel ? ` ${context.channel}` : ''}: ${String(error)}`;
+}
+
 export function connect(encryptionKeyManager: KeyManager, metrics: SessionMetrics): RedisClient {
-  const dependencies: RedisClientDependencies = { encryptionKeyManager, metrics };
+  const dependencies: RedisClientDependencies = { encryptionKeyManager, metrics, onError: (error, context) => { alertOn(error, context); } };
   return createRedisClient(config, dependencies);
+}
+
+export async function shutdown(client: RedisClient): Promise<void> {
+  await client.close();
 }
 
 export function modules(client: RedisClient): [RedisCache, RedisLock, RedisRateLimiter, RedisPubSub, RedisStreams, SessionManager] {

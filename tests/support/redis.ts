@@ -180,10 +180,7 @@ export interface RedisFixture {
   readonly observer: Observer;
   /** The topology's connection config, as the factories take it. */
   connectionConfig(): RedisConfig;
-  /**
-   * The client facade on this topology. The public surface has no way to close the connection a
-   * factory opens (facade gap, recorded on #20), so these connections are left for the test worker's exit to reap.
-   */
+  /** The client facade on this topology, closed once the suite is done. */
   connectClient(modules?: ModuleSections, dependencies?: RedisClientDependencies): RedisClient;
   /**
    * `it` on standalone. On Cluster the test is known to fail until `ticket` is fixed, with an error whose message, or a cause's,
@@ -213,12 +210,17 @@ export interface RedisFixture {
   flushScriptCache(): Promise<void>;
 }
 
-/** Sets up a suite's {@link RedisFixture} on one topology and deletes the namespaces it minted afterwards. Stored data on a shared server is never flushed. */
+/**
+ * Sets up a suite's {@link RedisFixture} on one topology. Afterwards it closes every client it opened and deletes
+ * the namespaces it minted. Stored data on a shared server is never flushed.
+ */
 function redisFixture(topology: Topology, config: RedisConfig): RedisFixture {
   let observer: Observer;
   const namespaces: string[] = [];
+  const opened: RedisClient[] = [];
   beforeAll(async () => { observer = await openObserver(config); });
   afterAll(async () => {
+    await Promise.all(opened.splice(0).map(client => client.close()));
     // A topology that never became ready has nothing to clean up, and its error is already the suite's.
     if (!observer) return;
     // One key at a time: a cluster refuses a multi-key DEL across slots.
@@ -229,7 +231,11 @@ function redisFixture(topology: Topology, config: RedisConfig): RedisFixture {
     topology,
     get observer() { return observer; },
     connectionConfig: () => config,
-    connectClient: (modules = {}, dependencies = {}) => createRedisClient({ ...config, ...modules }, dependencies),
+    connectClient(modules = {}, dependencies = {}) {
+      const client = createRedisClient({ ...config, ...modules }, dependencies);
+      opened.push(client);
+      return client;
+    },
     itFailsOnClusterUntil(ticket, failure, name, test) {
       if (topology !== 'cluster') { it(name, test); return; }
       it(`${name} (expected to fail on Cluster until ${ticket})`, async () => {
