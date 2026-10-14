@@ -7,10 +7,10 @@ import { RateLimitError, type RateLimitConfig, type RateLimitResult } from './ty
  * window other than the current one counts as empty. Each returns the window's count, the window's end and the server
  * time, in whole seconds.
  */
-const CURRENT_WINDOW = `local now=tonumber(redis.call('TIME')[1]); local w=tonumber(ARGV[1]); local bucket=tostring(math.floor(now/w)); local windowEnd=(bucket+1)*w; local current=redis.call('HGET',KEYS[1],'window')==bucket;`;
+const CURRENT_WINDOW = `local serverSeconds=tonumber(redis.call('TIME')[1]); local w=tonumber(ARGV[1]); local bucket=tostring(math.floor(serverSeconds/w)); local windowEnd=(bucket+1)*w; local current=redis.call('HGET',KEYS[1],'window')==bucket;`;
 const SCRIPT_SOURCES = {
-  consume: `${CURRENT_WINDOW} local c; if current then c=redis.call('HINCRBY',KEYS[1],'count',ARGV[2]) else redis.call('HSET',KEYS[1],'window',bucket,'count',ARGV[2]); c=tonumber(ARGV[2]) end; if not current or redis.call('TTL',KEYS[1])==-1 then redis.call('EXPIREAT',KEYS[1],windowEnd) end; return {c,windowEnd,now}`,
-  check: `${CURRENT_WINDOW} local c=0; if current then c=tonumber(redis.call('HGET',KEYS[1],'count')) end; return {c,windowEnd,now}`,
+  consume: `${CURRENT_WINDOW} local c; if current then c=redis.call('HINCRBY',KEYS[1],'count',ARGV[2]) else redis.call('HSET',KEYS[1],'window',bucket,'count',ARGV[2]); c=tonumber(ARGV[2]) end; if not current or redis.call('TTL',KEYS[1])==-1 then redis.call('EXPIREAT',KEYS[1],windowEnd) end; return {c,windowEnd,serverSeconds}`,
+  check: `${CURRENT_WINDOW} local c=0; if current then c=tonumber(redis.call('HGET',KEYS[1],'count')) end; return {c,windowEnd,serverSeconds}`,
 } as const;
 
 /** Fixed-window Redis rate limiter with atomic increment-and-expire behavior. */
@@ -29,16 +29,16 @@ export class RedisRateLimiter {
   /** Consumes `cost` units from the subject's current fixed window. Denied requests still count against the window. */
   async consume(subject: string, cost = 1): Promise<RateLimitResult> {
     if (!Number.isInteger(cost) || cost <= 0) throw new RateLimitError('RATE_LIMIT_INPUT', 'Rate-limit cost must be a positive integer');
-    const [count, windowEnd, now] = await this.run('consume', subject, [String(this.config.windowSeconds), String(cost)]);
+    const [count, windowEnd, serverSeconds] = await this.run('consume', subject, [String(this.config.windowSeconds), String(cost)]);
     const allowed = count <= this.config.maxRequests;
-    return { allowed, limit: this.config.maxRequests, remaining: Math.max(0, this.config.maxRequests - count), resetAt: windowEnd, retryAfterSeconds: allowed ? 0 : windowEnd - now, count };
+    return { allowed, limit: this.config.maxRequests, remaining: Math.max(0, this.config.maxRequests - count), resetAt: windowEnd, retryAfterSeconds: allowed ? 0 : windowEnd - serverSeconds, count };
   }
 
   /** Checks the current window without consuming a request. */
   async check(subject: string): Promise<RateLimitResult> {
-    const [count, windowEnd, now] = await this.run('check', subject, [String(this.config.windowSeconds)]);
+    const [count, windowEnd, serverSeconds] = await this.run('check', subject, [String(this.config.windowSeconds)]);
     const allowed = count < this.config.maxRequests;
-    return { allowed, limit: this.config.maxRequests, remaining: Math.max(0, this.config.maxRequests - count), resetAt: windowEnd, retryAfterSeconds: allowed ? 0 : windowEnd - now, count };
+    return { allowed, limit: this.config.maxRequests, remaining: Math.max(0, this.config.maxRequests - count), resetAt: windowEnd, retryAfterSeconds: allowed ? 0 : windowEnd - serverSeconds, count };
   }
 
   /** Resets the current fixed-window counter for a subject. */
@@ -53,7 +53,7 @@ export class RedisRateLimiter {
     return this.keys.key(this.keys.hashTag(subject));
   }
 
-  private async run(script: keyof typeof SCRIPT_SOURCES, subject: string, args: string[]): Promise<[count: number, windowEnd: number, now: number]> {
+  private async run(script: keyof typeof SCRIPT_SOURCES, subject: string, args: string[]): Promise<[count: number, windowEnd: number, serverSeconds: number]> {
     const reply = await this.scripts.eval(script, [this.subjectKey(subject)], args) as [number, number, number];
     return [Number(reply[0]), Number(reply[1]), Number(reply[2])];
   }

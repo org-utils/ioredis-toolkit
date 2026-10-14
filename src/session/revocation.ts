@@ -17,9 +17,9 @@ import type { SessionKeyStrategy } from './keys.js';
 export class RedisRevocationStore {
   /** Creates a revocation store using the shared Redis client and session key strategy. */
   constructor(private readonly redis: RedisClientWrapper, private readonly keys: SessionKeyStrategy) {}
-  /** Stores a bounded-TTL JTI revocation tombstone. `now` should be sourced from the same clock as the caller's other session operations (e.g. Redis server time) to avoid skew. */
-  async revoke(jti: string, now: number, expiresAt: number, reason = 'revoked'): Promise<void> {
-    const ttl = Math.ceil(expiresAt - now);
+  /** Stores a bounded-TTL JTI revocation tombstone. `serverSeconds` is Redis server time, the clock `expiresAt` is measured on (ADR-0002). */
+  async revoke(jti: string, serverSeconds: number, expiresAt: number, reason = 'revoked'): Promise<void> {
+    const ttl = Math.ceil(expiresAt - serverSeconds);
     if (ttl <= 0) return;
     try { await this.redis.set(this.keys.revoked(jti), reason, 'EX', String(ttl), 'NX'); }
     catch (error) { throw new SessionStorageError('Unable to persist revocation', error); }

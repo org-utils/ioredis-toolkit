@@ -113,25 +113,25 @@ export class SessionRepository {
    * from. The write is worked out from that read and made only if the record is still the one it found.
    */
   async touch(read: SessionRead): Promise<'updated' | 'skipped' | 'invalid'> {
-    const now = read.serverSeconds;
+    const serverSeconds = read.serverSeconds;
     return this.change<'updated' | 'skipped' | 'invalid'>(read.record, (stored, attempt) => {
-      if (!isRecord(stored) || stored.status !== 'active' || hasExpired(stored, now)) return { result: 'invalid' };
-      if (now - stored.lastAccessedAt < this.o.config.touchInterval) return { result: 'skipped' };
+      if (!isRecord(stored) || stored.status !== 'active' || hasExpired(stored, serverSeconds)) return { result: 'invalid' };
+      if (serverSeconds - stored.lastAccessedAt < this.o.config.touchInterval) return { result: 'skipped' };
       // A touch that lost the write to another touch at this same instant has nothing left to extend.
-      if (attempt > 0 && stored.lastAccessedAt >= now) return { result: 'skipped' };
+      if (attempt > 0 && stored.lastAccessedAt >= serverSeconds) return { result: 'skipped' };
       const idleDuration = stored.idleTimeoutSeconds ?? this.o.config.idleTimeout ?? this.o.config.ttl;
-      const idleExpiresAt = stored.idleExpiresAt === null ? null : Math.min(stored.absoluteExpiresAt ?? Number.MAX_SAFE_INTEGER, now + idleDuration);
+      const idleExpiresAt = stored.idleExpiresAt === null ? null : Math.min(stored.absoluteExpiresAt ?? Number.MAX_SAFE_INTEGER, serverSeconds + idleDuration);
       // A touch changes nothing the application can see, so it leaves the version alone.
-      return { result: 'updated', replacement: { ...stored, lastAccessedAt: now, idleExpiresAt }, ttl: stored.expiresAt - now };
+      return { result: 'updated', replacement: { ...stored, lastAccessedAt: serverSeconds, idleExpiresAt }, ttl: stored.expiresAt - serverSeconds };
     }, { raw: read.raw, stored: read.record });
   }
 
   /** Consumes a predecessor session for rotation; of any number of concurrent callers, exactly one succeeds. */
-  async consume(record: SessionRecord, now: number, tombstoneTtl: number): Promise<void> {
+  async consume(record: SessionRecord, serverSeconds: number, tombstoneTtl: number): Promise<void> {
     await this.change(record, stored => {
       if (isRecord(stored) && stored.status === 'consumed') throw new SessionReplayError();
-      if (!isRecord(stored) || stored.status === 'revoked' || hasExpired(stored, now)) throw new SessionRotationError('Session cannot be rotated');
-      return { result: undefined, replacement: { ...stored, status: 'consumed', consumedAt: now, version: stored.version + 1 }, ttl: Math.max(1, tombstoneTtl) };
+      if (!isRecord(stored) || stored.status === 'revoked' || hasExpired(stored, serverSeconds)) throw new SessionRotationError('Session cannot be rotated');
+      return { result: undefined, replacement: { ...stored, status: 'consumed', consumedAt: serverSeconds, version: stored.version + 1 }, ttl: Math.max(1, tombstoneTtl) };
     });
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
@@ -143,12 +143,12 @@ export class SessionRepository {
    * the one the caller read, so a touch that landed in between is kept. With an `expectedVersion`, a record at any other
    * version is refused with {@link SessionConflictError}.
    */
-  async update(record: SessionRecord, patch: (stored: SessionRecord) => SessionRecord, expectedVersion: number | undefined, now: number): Promise<SessionRecord> {
+  async update(record: SessionRecord, patch: (stored: SessionRecord) => SessionRecord, expectedVersion: number | undefined, serverSeconds: number): Promise<SessionRecord> {
     return this.change(record, stored => {
-      if (!isRecord(stored) || stored.status !== 'active' || stored.expiresAt <= now) throw new SessionStorageError('Session update failed');
+      if (!isRecord(stored) || stored.status !== 'active' || stored.expiresAt <= serverSeconds) throw new SessionStorageError('Session update failed');
       if (expectedVersion !== undefined && stored.version !== expectedVersion) throw new SessionConflictError();
       const replacement = patch(stored);
-      return { result: replacement, replacement, ttl: stored.expiresAt - now };
+      return { result: replacement, replacement, ttl: stored.expiresAt - serverSeconds };
     });
   }
 
@@ -156,7 +156,7 @@ export class SessionRepository {
    * Marks a session revoked. The write is unconditional, so no amount of concurrent writing can hold a
    * revocation off; every other change is conditional on the value it read, so none can undo one.
    */
-  async revoke(record: SessionRecord, now: number, tombstoneTtl: number): Promise<void> {
+  async revoke(record: SessionRecord, serverSeconds: number, tombstoneTtl: number): Promise<void> {
     const key = this.o.keys.session(record.userId, record.id);
     const { stored } = await this.load(key);
     if (stored === 'unreadable') throw new SessionStorageError('Session revocation failed');
@@ -185,10 +185,10 @@ export class SessionRepository {
 
   /**
    * Loads a bounded page of sessions and removes members whose record is gone from the user's session set. A record past
-   * any of its expiries at `now` is left out of the page. So is a record that cannot be decoded, which is kept in the set,
+   * any of its expiries at `serverSeconds` is left out of the page. So is a record that cannot be decoded, which is kept in the set,
    * so a misconfigured key manager drops no session.
    */
-  async list(userId: string, offset: number, limit: number, now: number): Promise<SessionRecord[]> {
+  async list(userId: string, offset: number, limit: number, serverSeconds: number): Promise<SessionRecord[]> {
     const members = await this.o.redis.zrange(this.o.keys.userIndex(userId), offset, offset + limit - 1);
     if (!members.length) return [];
     const keys = members.map(tokenHash => this.o.keys.sessionByTag(this.o.keys.userTag(userId), tokenHash));
@@ -199,7 +199,7 @@ export class SessionRepository {
       if (!value) { stale.push(members[i]!); return; }
       let record: SessionRecord;
       try { record = this.o.serializer.deserialize(value); } catch { return; /* reported by resolve(), never deleted */ }
-      if (!hasExpired(record, now)) records.push(record);
+      if (!hasExpired(record, serverSeconds)) records.push(record);
     });
     if (stale.length) await this.o.redis.zrem(this.o.keys.userIndex(userId), ...stale);
     return records;
@@ -282,9 +282,9 @@ export class SessionRepository {
 
 function isRecord(stored: Stored): stored is SessionRecord { return typeof stored !== 'string'; }
 
-/** Whether any of a record's expiries has passed at `now`. */
-function hasExpired(record: SessionRecord, now: number): boolean {
-  return record.expiresAt <= now
-    || (record.absoluteExpiresAt !== null && record.absoluteExpiresAt <= now)
-    || (record.idleExpiresAt !== null && record.idleExpiresAt <= now);
+/** Whether any of a record's expiries has passed at `serverSeconds`. */
+function hasExpired(record: SessionRecord, serverSeconds: number): boolean {
+  return record.expiresAt <= serverSeconds
+    || (record.absoluteExpiresAt !== null && record.absoluteExpiresAt <= serverSeconds)
+    || (record.idleExpiresAt !== null && record.idleExpiresAt <= serverSeconds);
 }

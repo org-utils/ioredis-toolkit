@@ -35,7 +35,7 @@ export class SessionService {
     if (this.o.config.securityVersionEnabled && input.securityVersion === undefined) throw new SessionInvalidError();
     // Checked whether or not security versions are enabled: the version goes into the record, and the first one is stored for the user, never to be overwritten.
     if (input.securityVersion !== undefined) validateSecurityVersion(input.securityVersion);
-    const now = await this.now();
+    const serverSeconds = await this.serverSeconds();
     const ttl = input.ttl ?? this.o.config.ttl;
     const absoluteDuration = input.absoluteTimeout ?? this.o.config.absoluteTimeout;
     const idleDuration = input.idleTimeout ?? this.o.config.idleTimeout;
@@ -43,11 +43,11 @@ export class SessionService {
     if (absoluteDuration !== undefined && ttl > absoluteDuration) throw new SessionInvalidError();
     const tokenData = this.o.tokens.generate();
     const tokenHash = this.o.tokens.hash(tokenData.token);
-    const absoluteExpiresAt = absoluteDuration === undefined ? null : now + absoluteDuration;
-    const expiresAt = absoluteExpiresAt === null ? now + ttl : Math.min(now + ttl, absoluteExpiresAt);
-    const idleExpiresAt = idleDuration === undefined ? null : Math.min(now + idleDuration, expiresAt);
+    const absoluteExpiresAt = absoluteDuration === undefined ? null : serverSeconds + absoluteDuration;
+    const expiresAt = absoluteExpiresAt === null ? serverSeconds + ttl : Math.min(serverSeconds + ttl, absoluteExpiresAt);
+    const idleExpiresAt = idleDuration === undefined ? null : Math.min(serverSeconds + idleDuration, expiresAt);
     const session: SessionRecord = {
-      id: tokenHash, jti: tokenData.jti, userId: input.userId, createdAt: now, lastAccessedAt: now,
+      id: tokenHash, jti: tokenData.jti, userId: input.userId, createdAt: serverSeconds, lastAccessedAt: serverSeconds,
       expiresAt, idleExpiresAt, absoluteExpiresAt, status: 'active', version: 1,
       securityVersion: input.securityVersion ?? null,
       ...(idleDuration !== undefined ? { idleTimeoutSeconds: idleDuration } : {}),
@@ -79,12 +79,12 @@ export class SessionService {
     if (!this.o.tokens.validateFormat(token)) return { valid: false, reason: 'invalid' };
     const read = await this.o.repository.read(this.o.tokens.hash(token));
     if (!read) return { valid: false, reason: 'not_found' };
-    const { record: session, serverSeconds: now } = read;
+    const { record: session, serverSeconds } = read;
     if (session.status === 'revoked') return { valid: false, reason: 'revoked' };
     if (session.status === 'consumed') return { valid: false, reason: 'consumed' };
-    if (session.expiresAt <= now) return { valid: false, reason: 'expired' };
-    if (session.absoluteExpiresAt !== null && session.absoluteExpiresAt <= now) return { valid: false, reason: 'absolute_timeout' };
-    if (session.idleExpiresAt !== null && session.idleExpiresAt <= now) return { valid: false, reason: 'idle_timeout' };
+    if (session.expiresAt <= serverSeconds) return { valid: false, reason: 'expired' };
+    if (session.absoluteExpiresAt !== null && session.absoluteExpiresAt <= serverSeconds) return { valid: false, reason: 'absolute_timeout' };
+    if (session.idleExpiresAt !== null && session.idleExpiresAt <= serverSeconds) return { valid: false, reason: 'idle_timeout' };
     if (!read.indexed) return { valid: false, reason: 'invalid' };
     if (this.o.config.securityVersionEnabled && (read.securityVersion === null || session.securityVersion !== Number(read.securityVersion))) return { valid: false, reason: 'invalid' };
     return { valid: true, read };
@@ -121,28 +121,28 @@ export class SessionService {
         if (value === null) delete replacement[field]; else replacement[field] = value;
       }
       return replacement;
-    }, expectedVersion, await this.now());
+    }, expectedVersion, await this.serverSeconds());
   }
 
   /** Consumes the predecessor credential and creates a successor credential with explicit partial-failure semantics. */
   async rotate(token: string): Promise<RotationResult> {
     const current = await this.get(token);
     if (current.status !== 'active') throw new SessionReplayError();
-    const now = await this.now();
-    const remaining = current.expiresAt - now;
+    const serverSeconds = await this.serverSeconds();
+    const remaining = current.expiresAt - serverSeconds;
     if (remaining <= 0) throw new SessionExpiredError();
     const tokenData = this.o.tokens.generate();
     const successorHash = this.o.tokens.hash(tokenData.token);
     const absoluteExpiresAt = current.absoluteExpiresAt;
     const expiresAt = absoluteExpiresAt === null ? current.expiresAt : Math.min(current.expiresAt, absoluteExpiresAt);
-    const idleExpiresAt = current.idleExpiresAt === null ? null : Math.min(expiresAt, now + (current.idleTimeoutSeconds ?? this.o.config.idleTimeout ?? Math.max(1, current.idleExpiresAt - current.lastAccessedAt)));
+    const idleExpiresAt = current.idleExpiresAt === null ? null : Math.min(expiresAt, serverSeconds + (current.idleTimeoutSeconds ?? this.o.config.idleTimeout ?? Math.max(1, current.idleExpiresAt - current.lastAccessedAt)));
     const successor: SessionRecord = {
-      ...current, id: successorHash, jti: tokenData.jti, createdAt: now, lastAccessedAt: now,
+      ...current, id: successorHash, jti: tokenData.jti, createdAt: serverSeconds, lastAccessedAt: serverSeconds,
       expiresAt, idleExpiresAt, status: 'active', version: 1, rotatedFrom: current.jti
     };
     // Cross-slot successor creation is deliberately two-phase. Consuming the predecessor
     // is authoritative and atomic; failure afterwards can only deny access, never create two valid successors.
-    await this.o.repository.consume(current, now, Math.min(300, Math.max(1, remaining)));
+    await this.o.repository.consume(current, serverSeconds, Math.min(300, Math.max(1, remaining)));
     try { await this.o.repository.create(successor); }
     catch (error) { throw new SessionRotationError('Rotation consumed the predecessor but successor creation failed', error); }
     this.metrics.increment('session.rotated');
@@ -165,8 +165,8 @@ export class SessionService {
     const hash = this.o.tokens.hash(token);
     const session = await this.o.repository.resolve(hash);
     if (!session) return;
-    const now = await this.now();
-    await this.o.repository.revoke(session, now, Math.min(300, Math.max(1, session.expiresAt - now)));
+    const serverSeconds = await this.serverSeconds();
+    await this.o.repository.revoke(session, serverSeconds, Math.min(300, Math.max(1, session.expiresAt - serverSeconds)));
     this.metrics.increment('session.revoked');
   }
 
@@ -188,7 +188,7 @@ export class SessionService {
     validateUserId(userId);
     if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1) throw new SessionInvalidError();
     if (limit > this.o.config.maxBatchSize) throw new SessionLimitError(`limit must not exceed maxBatchSize (${this.o.config.maxBatchSize})`);
-    return this.o.repository.list(userId, offset, limit, await this.now());
+    return this.o.repository.list(userId, offset, limit, await this.serverSeconds());
   }
 
   /**
@@ -196,7 +196,7 @@ export class SessionService {
    * has left before its hard expiry, measured in authoritative time.
    */
   async cookie(token: string, session: SessionRecord): Promise<string> {
-    const maxAge = this.o.config.cookie.maxAge ?? Math.max(0, session.expiresAt - await this.now());
+    const maxAge = this.o.config.cookie.maxAge ?? Math.max(0, session.expiresAt - await this.serverSeconds());
     return serializeCookie(token, { ...this.cookieOptions(), maxAge });
   }
 
@@ -209,7 +209,7 @@ export class SessionService {
     return { name, httpOnly, secure, sameSite, path, ...(domain !== undefined ? { domain } : {}) };
   }
 
-  private async now(): Promise<number> {
+  private async serverSeconds(): Promise<number> {
     try { return await this.clock.serverSeconds(); }
     catch (error) { throw new SessionStorageError('Redis time unavailable', error); }
   }
