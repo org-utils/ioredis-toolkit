@@ -164,12 +164,12 @@ export class SessionService {
     return this.o.repository.revokeAll(userId, limit);
   }
 
-  /** Returns a bounded page of authoritative sessions for a user. */
+  /** Returns a bounded page of a user's sessions, leaving out any past one of its expiries in authoritative time. */
   async list(userId: string, offset = 0, limit = this.o.config.maxBatchSize): Promise<SessionRecord[]> {
     validateUserId(userId);
     if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1) throw new SessionInvalidError();
     if (limit > this.o.config.maxBatchSize) throw new SessionLimitError(`limit must not exceed maxBatchSize (${this.o.config.maxBatchSize})`);
-    return this.o.repository.list(userId, offset, limit);
+    return this.o.repository.list(userId, offset, limit, await this.now());
   }
 
   private async now(): Promise<number> {

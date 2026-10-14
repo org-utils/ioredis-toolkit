@@ -193,7 +193,9 @@ Use bounded loops or background jobs for users with unusually large session coun
 
 ## `list(userId, offset?, limit?)`
 
-Returns a bounded page of authoritative sessions for an application user.
+Returns a bounded page of an application user's sessions. A session past any of its expiries (hard, idle or absolute), measured in Redis server time, is left out, so the page lists only sessions that can still authenticate. A page can therefore hold fewer than `limit` sessions while more remain.
+
+A member of the user's session set whose record is gone is removed from the set. A record that cannot be decoded, for example because the key manager lacks the key version it was encrypted under, is left out of the page but stays in the set and in Redis.
 
 ```ts
 const sessionsForUser = await sessions.list('user_123', 0, 50);
@@ -243,7 +245,7 @@ All typed errors extend `SessionError`, which extends the package-wide `RedisToo
 | `SessionLimitError` | `SESSION_LIMIT` | `list()` when `limit` exceeds `maxBatchSize` |
 | `SessionInvalidError` | `SESSION_INVALID` | malformed input, or a session that fails an index/security-version check |
 | `SessionStorageError` | `SESSION_STORAGE` | Redis-level read/write failures |
-| `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read |
+| `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read. `validate()` throws it too. The record is never deleted, so restoring the key manager or encryption setting makes the session usable again |
 | `SessionConfigurationError` | `SESSION_CONFIGURATION` | invalid session configuration, or constructing the manager while `enabled: false` |
 | `SessionInputError` | `SESSION_INPUT` | `serializeCookie()`/`serializeDeletionCookie()` given an invalid cookie name, or `SameSite=None` without `Secure` |
 

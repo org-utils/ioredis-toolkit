@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   SessionConflictError, SessionExpiredError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError, SessionStorageError,
@@ -7,7 +8,7 @@ import { unknownCredential } from '../support/credential.js';
 import { expectPackageError } from '../support/errors.js';
 import { hashSlot } from '../support/hash-slot.js';
 import { describeOnEachTopology } from '../support/redis.js';
-import { keyManager } from '../support/key-manager.js';
+import { keyManager, keyManagerHolding } from '../support/key-manager.js';
 
 /** The secret half of an opaque credential; the other half is the JTI, which is stored by design. */
 function secretOf(token: string): string { return token.slice(token.indexOf('.') + 1); }
@@ -25,6 +26,14 @@ describeOnEachTopology('sessions against real Redis', redis => {
     }
     expect(holding).toHaveLength(1);
     return holding[0]!;
+  }
+
+  /** The one key under a namespace holding a user's session set, the sorted set of that user's sessions. */
+  async function sessionSetKey(namespace: string): Promise<string> {
+    const sets: string[] = [];
+    for (const key of await redis.keysUnder(namespace)) if ((await redis.observer.type(key)) === 'zset') sets.push(key);
+    expect(sets).toHaveLength(1);
+    return sets[0]!;
   }
 
   it.each(['plain', 'encrypted'] as const)('creates, validates, touches, updates, rotates, revokes and destroys a session in %s storage', async storage => {
@@ -237,6 +246,53 @@ describeOnEachTopology('sessions against real Redis', redis => {
       const left = (await redis.keysUnder(namespace)).join('\n');
       expect(left).not.toContain(rotated.session.id);
       expect(left).not.toContain(revoked.session.id);
+    });
+  });
+
+  it('lists only sessions that have not passed any of their expiries', async () => {
+    const namespace = redis.newNamespace();
+    const sessions = sessionsIn(namespace, { idleTimeout: 300 });
+    const live = await sessions.create({ userId: 'integration-user' });
+    const idle = await sessions.create({ userId: 'integration-user' });
+    // The record is the one key that names the session and carries the user's hash tag.
+    const [idleRecordKey] = (await redis.keysUnder(namespace)).filter(key => key.includes(idle.session.id) && key.includes('{'));
+    const lapsed = { ...idle.session, idleExpiresAt: idle.session.createdAt - 1 };
+    await redis.observer.set(idleRecordKey!, JSON.stringify({ v: 1, data: JSON.stringify(lapsed) }), 'KEEPTTL');
+
+    expect(await sessions.list('integration-user')).toEqual([live.session]);
+  });
+
+  describe('records that cannot be decoded', () => {
+    /** Keys by version, and managers for a deploy whose key manager briefly lacks the version older sessions were written under. */
+    function keyVersions() {
+      const keys = { v1: randomBytes(32), v2: randomBytes(32) };
+      return { before: keyManagerHolding({ v1: keys.v1 }, 'v1'), missingV1: keyManagerHolding({ v2: keys.v2 }, 'v2'), restored: keyManagerHolding(keys, 'v2') };
+    }
+
+    function encryptedSessionsIn(namespace: string, encryptionKeyManager: KeyManager): SessionManager {
+      return sessionsIn(namespace, { encryption: { enabled: true } }, encryptionKeyManager);
+    }
+
+    it('reports a record whose key version is missing, leaves it as stored, and validates it again once the key is back', async () => {
+      const namespace = redis.newNamespace();
+      const managers = keyVersions();
+      const created = await encryptedSessionsIn(namespace, managers.before).create({ userId: 'integration-user' });
+      const stored = await redis.storedUnder(namespace);
+
+      await expectPackageError(() => encryptedSessionsIn(namespace, managers.missingV1).validate(created.token), SessionSerializationError, 'SESSION_SERIALIZATION');
+      expect(await redis.storedUnder(namespace)).toBe(stored);
+      expect(await encryptedSessionsIn(namespace, managers.restored).validate(created.token)).toEqual({ valid: true, session: created.session });
+    });
+
+    it('lists the sessions it can read and keeps the others in the user\'s session set', async () => {
+      const namespace = redis.newNamespace();
+      const managers = keyVersions();
+      const unreadable = await encryptedSessionsIn(namespace, managers.before).create({ userId: 'integration-user' });
+      const sessions = encryptedSessionsIn(namespace, managers.missingV1);
+      const readable = await sessions.create({ userId: 'integration-user' });
+
+      expect(await sessions.list('integration-user')).toEqual([readable.session]);
+      expect(await redis.observer.zrange(await sessionSetKey(namespace), 0, -1)).toContain(unreadable.session.id);
     });
   });
 
