@@ -2,8 +2,8 @@ import type { Cluster, Redis } from 'ioredis';
 import { KeyStrategy, closeConnection, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
 import { PubSubError, type PubSubConfig, type PubSubMessage, type Subscription } from './types.js';
 
-/** A handler as registered: given the raw message, it decodes and delivers it. */
-type Handler = (raw: string) => unknown;
+/** A handler as registered: given the decoded value, it delivers the message. */
+type Handler = (value: unknown) => unknown;
 
 /** One physical channel: its logical name, the handlers on it, and the Redis subscription they all wait on. */
 interface Channel { logical: string; handlers: Set<Handler>; subscribed: Promise<unknown> }
@@ -46,7 +46,7 @@ export class RedisPubSub {
    */
   async subscribe<T>(channel: string, handler: (message: PubSubMessage<T>) => void | Promise<void>): Promise<Subscription> {
     const full = this.fullChannel(channel);
-    const wrapped: Handler = raw => handler({ channel, value: JSON.parse(raw) as T });
+    const wrapped: Handler = value => handler({ channel, value: value as T });
     let entry = this.channels.get(full);
     if (!entry) {
       entry = { logical: channel, handlers: new Set(), subscribed: this.subscriber.subscribe(full) };
@@ -79,19 +79,20 @@ export class RedisPubSub {
   fullChannel(channel: string): string { return this.keys.key(channel); }
 
   /**
-   * Hands one message to every handler on its channel, each isolated from the others. A message that is not JSON is
-   * reported once, as `PUBSUB_SERIALIZATION`, and handed to none.
+   * Hands one message to every handler on its channel, each isolated from the others; all of them share the one decoded
+   * value. A message that is not JSON is reported once, as `PUBSUB_SERIALIZATION`, and handed to none.
    */
   private deliver(full: string, raw: string): void {
     const entry = this.channels.get(full);
     if (!entry) return;
     const context = { source: 'pubsub-handler', channel: entry.logical } as const;
-    try { JSON.parse(raw); }
+    let value: unknown;
+    try { value = JSON.parse(raw); }
     catch (error) { this.report(new PubSubError('PUBSUB_SERIALIZATION', `A message on "${entry.logical}" is not valid JSON`, { cause: error }), context); return; }
     // A copy, so a handler that unsubscribes another mid-delivery does not change who this message reaches.
     for (const handler of [...entry.handlers]) {
       try {
-        const result = handler(raw);
+        const result = handler(value);
         if (isThenable(result)) Promise.resolve(result).catch((error: unknown) => this.report(error, context));
       } catch (error) { this.report(error, context); }
     }
@@ -106,6 +107,7 @@ export class RedisPubSub {
   }
 }
 
+/** Whether a handler returned a promise, or anything else that can reject. */
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
 }

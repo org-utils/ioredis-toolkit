@@ -84,4 +84,14 @@ describeOnEachTopology('Streams against real Redis', redis => {
     await expect(waiting).rejects.toThrow();
     await eventually(async () => expect(await redis.connectionsNamed(connectionName)).toEqual([]));
   });
+
+  it('refuses blocking reads once the Streams module is closed, leaving the shared connection free', async () => {
+    const { client } = namedClient();
+    await client.streams.close();
+    await expect(client.streams.read('events', { blockMs: 5_000 })).rejects.toThrow();
+    // The client itself is still open, and nothing is waiting on its shared connection.
+    const started = performance.now();
+    await client.cache.get('k');
+    expect(performance.now() - started).toBeLessThan(500);
+  });
 });

@@ -28,14 +28,15 @@ export class RedisClientWrapper implements RedisCommandClient {
   }
   /** Performs SETNX. */
   setnx(key: string, value: string): Promise<number> { return this.client.setnx(key, value); }
-  /** Deletes keys, splitting cross-slot deletions into safe groups in Cluster mode. Deleting no keys contacts no server. */
+  /** Deletes keys in DELs of at most {@link DELETE_BATCH} keys, each within one slot in Cluster mode. Deleting no keys contacts no server. */
   async del(...keys: string[]): Promise<number> {
     if (keys.length === 0) return 0;
-    if (keys.length === 1 || !isCluster(this.client)) return this.client.del(...keys);
+    if (!isCluster(this.client)) return deleteInBatches(this.client, keys);
     let deleted = 0;
     await boundedMap([...groupBySlot(keys).values()], 4, async group => {
       // Not `deleted += await …`, which reads the total before the wait and so loses what concurrent groups add meanwhile.
-      for (const batch of chunk(group, DELETE_BATCH)) { const count = await this.client.del(...batch); deleted += count; }
+      const count = await deleteInBatches(this.client, group);
+      deleted += count;
     });
     return deleted;
   }
@@ -152,7 +153,7 @@ export class RedisClientWrapper implements RedisCommandClient {
   async deletePatternClusterAware(pattern: string, options: ClusterFanoutOptions = {}): Promise<number> {
     let deleted = 0;
     await this.scanPages(pattern, DELETE_BATCH, options, async (page, node) => {
-      // Pages from different masters are deleted concurrently, so each count is awaited before it is added.
+      // As in del(), each count is awaited before it is added.
       const count = node ? await deleteOnNode(this.client as Cluster, node, page) : await deleteInBatches(this.client, page);
       deleted += count;
     });

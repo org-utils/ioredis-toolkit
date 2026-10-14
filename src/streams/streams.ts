@@ -1,5 +1,5 @@
 import { KeyStrategy, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
-import { streamReadersOf } from './readers.js';
+import { streamReadersOf, type StreamReaders } from './readers.js';
 import { StreamsError, type StreamEntry, type StreamReadOptions, type StreamsConfig } from './types.js';
 
 /**
@@ -8,7 +8,7 @@ import { StreamsError, type StreamEntry, type StreamReadOptions, type StreamsCon
  */
 export class RedisStreams {
   private readonly keys: KeyStrategy;
-  private readonly readers: ReturnType<typeof streamReadersOf>;
+  private readonly readers: StreamReaders;
   /**
    * Creates a Streams module bound to the shared Redis client. Errors on its reader connections go to `report` and never
    * crash the process; every Streams module on one client shares those connections.
@@ -48,7 +48,10 @@ export class RedisStreams {
   async delete(name: string, ...ids: string[]): Promise<number> { return this.redis.xdel(this.key(name), ...ids); }
   /** Returns the stream length. */
   async length(name: string): Promise<number> { return this.redis.xlen(this.key(name)); }
-  /** Disconnects the reader connections of every Streams module on this client, ending any read still waiting. Idempotent. */
+  /**
+   * Disconnects the reader connections of every Streams module on this client, ending any read still waiting. Later
+   * reads reject. Idempotent.
+   */
   async close(): Promise<void> { this.readers.close(); }
 }
 

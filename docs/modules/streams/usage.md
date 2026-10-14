@@ -76,7 +76,7 @@ Reads normal stream entries or consumer-group entries. Every read blocks for `bl
 
 A blocking read never runs on the client's shared connection. It leases a connection of its own from a pool of duplicates the Streams module grows on demand, and hands it back when the read returns. So a consumer waiting on a stream, even with `blockMs: 0`, never delays session checks, cache reads or any other command, and two concurrent reads on different streams wait side by side instead of queueing. Each concurrent read holds one connection, so the pool grows to the most reads in flight at once. Errors on these connections reach the client's `onError` hook with source `stream-reader`.
 
-`RedisClient.close()` disconnects every reader connection, so a read still waiting, however long its `blockMs`, rejects at once instead of holding shutdown up.
+`RedisClient.close()` disconnects every reader connection, so a read still waiting, however long its `blockMs`, rejects at once instead of holding shutdown up. After that, and after `streams.close()`, which does the same for the Streams module alone, every `read()` rejects without opening a connection.
 
 Normal read:
 
