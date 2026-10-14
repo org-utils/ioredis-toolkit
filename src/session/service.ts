@@ -1,5 +1,6 @@
 import type { SessionConfig } from './config.js';
 import { SessionConflictError, SessionExpiredError, SessionInvalidError, SessionLimitError, SessionNotFoundError, SessionReplayError, SessionRotationError, SessionStorageError, SessionRevokedError } from './errors.js';
+import { serializeCookie, serializeDeletionCookie, type CookieOptions } from './cookie.js';
 import { NoopMetrics } from './metrics.js';
 import type { SessionRepository } from './repository.js';
 import type { SessionTokenManager } from './token.js';
@@ -180,6 +181,24 @@ export class SessionService {
     if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1) throw new SessionInvalidError();
     if (limit > this.o.config.maxBatchSize) throw new SessionLimitError(`limit must not exceed maxBatchSize (${this.o.config.maxBatchSize})`);
     return this.o.repository.list(userId, offset, limit, await this.now());
+  }
+
+  /**
+   * Serializes the configured cookie carrying a credential. Without a configured `maxAge`, it lives as long as the session
+   * has left before its hard expiry, measured in authoritative time.
+   */
+  async cookie(token: string, session: SessionRecord): Promise<string> {
+    const maxAge = this.o.config.cookie.maxAge ?? Math.max(0, session.expiresAt - await this.now());
+    return serializeCookie(token, { ...this.cookieOptions(), maxAge });
+  }
+
+  /** Serializes an expired cookie with the configured name, path and domain, which makes a browser drop the session cookie. */
+  deletionCookie(): string { return serializeDeletionCookie(this.cookieOptions()); }
+
+  /** The configured cookie attributes, less `maxAge`, which each kind of cookie sets for itself. */
+  private cookieOptions(): CookieOptions {
+    const { name, httpOnly, secure, sameSite, path, domain } = this.o.config.cookie;
+    return { name, httpOnly, secure, sameSite, path, ...(domain !== undefined ? { domain } : {}) };
   }
 
   private async now(): Promise<number> {

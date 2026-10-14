@@ -250,6 +250,23 @@ describeOnEachTopology('sessions against real Redis', redis => {
     });
   });
 
+  describe('cookies', () => {
+    const cookie = { name: 'sid', domain: 'example.com', sameSite: 'strict' } as const;
+
+    it('serializes the configured cookie, living as long as the session has left', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { ttl: 3_600, cookie });
+      const created = await sessions.create({ userId: 'integration-user' });
+      const before = Number((await redis.observer.time())[0]);
+      const header = await sessions.cookie(created.token, created.session);
+      const after = Number((await redis.observer.time())[0]);
+
+      const maxAge = Number(/; Max-Age=(\d+)/.exec(header)?.[1]);
+      expect(maxAge).toBeLessThanOrEqual(created.session.expiresAt - before);
+      expect(maxAge).toBeGreaterThanOrEqual(created.session.expiresAt - after);
+      expect(header).toBe(`sid=${encodeURIComponent(created.token)}; Max-Age=${maxAge}; Domain=example.com; Path=/; HttpOnly; Secure; SameSite=Strict`);
+    });
+  });
+
   describe('security versions', () => {
     /** The one key under a namespace holding a user's security version: a string that is not a session envelope. */
     async function securityVersionKey(namespace: string): Promise<string> {

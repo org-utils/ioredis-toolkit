@@ -27,9 +27,12 @@ export function sourceOf(specifier: string): string {
   return specifier === manifest.name ? rootBarrel : entryPointOf(specifier);
 }
 
-/** A program over `files` under the package's own compiler options, so its name resolves through the exports map to the source each target is built from. */
-export function packageProgram(files: string[]): ts.Program {
-  const { options } = ts.getParsedCommandLineOfConfigFile(path.join(root, 'tsconfig.json'), { noEmit: true }, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: diagnostic => { throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')); } })!;
+/**
+ * A program over `files` under the package's own compiler options, so its name resolves through the exports map to the source each target is built from.
+ * It emits nothing unless `overrides` say otherwise.
+ */
+export function packageProgram(files: string[], overrides: ts.CompilerOptions = {}): ts.Program {
+  const { options } = ts.getParsedCommandLineOfConfigFile(path.join(root, 'tsconfig.json'), { noEmit: true, ...overrides }, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: diagnostic => { throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')); } })!;
   return ts.createProgram(files, options);
 }
 

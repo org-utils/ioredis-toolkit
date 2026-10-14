@@ -27,4 +27,11 @@ export class SessionManager {
   revokeAll(userId: string, limit?: number): Promise<{ affected: number; remaining: number }> { return this.service.revokeAll(userId, limit); }
   /** Lists a bounded page of sessions for a user. */
   list(userId: string, offset?: number, limit?: number): Promise<SessionRecord[]> { return this.service.list(userId, offset, limit); }
+  /**
+   * Serializes a `Set-Cookie` value carrying a session's credential, with the configured `cookie` options. Without a configured
+   * `cookie.maxAge`, `Max-Age` is what the session has left before its hard expiry, in Redis server time.
+   */
+  cookie(token: string, session: SessionRecord): Promise<string> { return this.service.cookie(token, session); }
+  /** Serializes an expired `Set-Cookie` value with the configured cookie name, path and domain, which removes the session cookie. */
+  deletionCookie(): string { return this.service.deletionCookie(); }
 }

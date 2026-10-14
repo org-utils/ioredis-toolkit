@@ -26,6 +26,7 @@ export const SessionConfigSchema = moduleConfigSchema("app")
     encryption: z
       .object({ enabled: z.boolean().default(false) })
       .default({ enabled: false }),
+    // Deprecated, and read by nothing: see SessionConfig.circuitBreaker.
     circuitBreaker: z
       .object({
         enabled: z.boolean().default(false),
@@ -82,7 +83,13 @@ export const SessionConfigSchema = moduleConfigSchema("app")
       });
   });
 /** Fully normalized session configuration returned by {@link parseSessionConfig}. */
-export type SessionConfig = z.infer<typeof SessionConfigSchema>;
+export type SessionConfig = Omit<z.infer<typeof SessionConfigSchema>, "circuitBreaker"> & {
+  /**
+   * @deprecated Has no effect: the package has no circuit breaker, and nothing reads this setting. It is still accepted and
+   * normalized so that existing configuration keeps parsing. It will be removed in the next major version.
+   */
+  circuitBreaker: z.infer<typeof SessionConfigSchema>["circuitBreaker"];
+};
 /** Validates and applies secure defaults to session configuration. */
 export function parseSessionConfig(input: unknown): SessionConfig {
   return parseConfig(

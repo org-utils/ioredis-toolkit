@@ -61,8 +61,8 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `storeUserAgent` | `boolean` | false | Persists user-agent metadata when enabled. |
 | `storeDeviceId` | `boolean` | false | Persists device ID metadata when enabled. |
 | `encryption.enabled` | `boolean` | false | Enables authenticated encryption for serialized session values when a key manager is supplied. |
-| `circuitBreaker` | object | see below | Reserved configuration, fully defaulted and validated like every other nested section. Not yet consulted by any repository/service code path — there is no circuit-breaker behavior wired up in this release. |
-| `cookie` | object | secure defaults | Cookie serialization settings. |
+| `circuitBreaker` | object | see below | **Deprecated, and has no effect.** The package has no circuit breaker. The section is still accepted and validated so that existing configuration keeps parsing, and will be removed in the next major version. |
+| `cookie` | object | secure defaults | The cookie `sessions.cookie()` and `sessions.deletionCookie()` serialize: `name`, `httpOnly`, `secure`, `sameSite`, `domain`, `path` and an optional `maxAge`. See [Cookie helpers](#cookie-helpers). |
 
 `circuitBreaker` defaults to `{ enabled: false, failureThreshold: 5, resetTimeoutMs: 10_000, halfOpenMaxRequests: 1 }` and, like `encryption` and `cookie`, may be omitted entirely.
 
@@ -211,7 +211,19 @@ This is an administrative/management operation, not an authentication primitive.
 
 ## Cookie helpers
 
-The package also exposes cookie serializers:
+The session manager serializes the cookie its `cookie` configuration describes:
+
+```ts
+const { token, session } = await sessions.create({ userId: 'user_123' });
+response.setHeader('Set-Cookie', await sessions.cookie(token, session));
+
+// On sign-out:
+response.setHeader('Set-Cookie', sessions.deletionCookie());
+```
+
+`cookie(token, session)` carries the configured name, domain, path, `HttpOnly`, `Secure` and `SameSite` attributes. Its `Max-Age` is `cookie.maxAge` when that is configured. Otherwise it is what the session has left before its hard expiry, measured in Redis server time, which is why the method is async. `deletionCookie()` returns an expired cookie with the configured name, path and domain, so the browser drops the session cookie.
+
+The package also exposes the cookie serializers themselves:
 
 ```ts
 import { serializeCookie, serializeDeletionCookie } from 'ioredis-toolkit';
@@ -227,6 +239,8 @@ const header = serializeCookie(token, {
 
 const clear = serializeDeletionCookie({ name: 'session', path: '/' });
 ```
+
+`serializeCookie()` rejects a `Domain` or `Path` that contains `;`, a control character or whitespace, any of which would end the attribute early or split the header, by throwing `SessionInputError`.
 
 Cookie authentication requires a CSRF strategy appropriate to the application. `HttpOnly` protects against direct JavaScript reads but does not itself prevent CSRF.
 
@@ -253,7 +267,7 @@ All typed errors extend `SessionError`, which extends the package-wide `RedisToo
 | `SessionStorageError` | `SESSION_STORAGE` | Redis-level read/write failures |
 | `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read. `validate()` throws it too. The record is never deleted, so restoring the key manager or encryption setting makes the session usable again |
 | `SessionConfigurationError` | `SESSION_CONFIGURATION` | invalid session configuration, or constructing the manager while `enabled: false` |
-| `SessionInputError` | `SESSION_INPUT` | `serializeCookie()`/`serializeDeletionCookie()` given an invalid cookie name, or `SameSite=None` without `Secure` |
+| `SessionInputError` | `SESSION_INPUT` | `serializeCookie()`/`serializeDeletionCookie()` (and so `cookie()`/`deletionCookie()`) given an invalid cookie name, a `Domain` or `Path` containing `;`, a control character or whitespace, or `SameSite=None` without `Secure` |
 
 `validate()` never throws for ordinary invalid-credential conditions — see the discriminated result above. These errors surface from `get()` and the other exception-based methods.
 
