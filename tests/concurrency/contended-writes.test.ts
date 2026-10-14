@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { SessionConflictError, SessionStorageError } from '../../src/index.js';
+import { SessionConflictError } from '../../src/index.js';
 import type { SessionConfig, SessionManager } from '../../src/index.js';
 import { keyManager } from '../support/key-manager.js';
 import { describeOnEachTopology } from '../support/redis.js';
@@ -23,8 +23,8 @@ describeOnEachTopology('contended session writes', redis => {
     const refusals = outcomes.flatMap(outcome => (outcome.status === 'rejected' ? [outcome.reason as unknown] : []));
 
     expect(written).toHaveLength(1);
-    // A writer that read the record before the winner wrote is refused at the store; one that read it after, before that.
-    for (const refusal of refusals) expect([SessionConflictError, SessionStorageError]).toContain((refusal as Error).constructor);
+    // A writer that read the record before the winner wrote is refused at the store, and one that read it after before that: both as a conflict.
+    for (const refusal of refusals) expect(refusal).toBeInstanceOf(SessionConflictError);
     expect(await sessions.get(created.token)).toEqual(written[0]);
   });
 
@@ -55,7 +55,7 @@ describeOnEachTopology('contended session writes', redis => {
     await Promise.all(Array.from({ length: 32 }, () => sessions.touch(created.token)));
 
     const touched = await sessions.get(created.token);
-    expect(touched.version).toBeGreaterThan(created.session.version);
+    expect(touched.version).toBe(created.session.version);
     expect(touched.idleExpiresAt).toBeGreaterThanOrEqual(created.session.idleExpiresAt!);
   });
 });

@@ -30,8 +30,8 @@ DELETED (physical cleanup)
 |---|---|---|---|---|
 | create | none | active | session + user index same-slot Lua; on eviction, also same-slot `DEL` of the evicted session/token-index keys; token locator is a separate, cross-slot secondary write | not idempotent |
 | validate | active candidate | read-only decision | no transaction needed | safe read retry by application |
-| touch | active | active | same-key compare-and-set | monotonic/idempotent effect |
-| update | active | active | same-key compare-and-set + version | safe only with version semantics |
+| touch | active | active | same-key compare-and-set; leaves `version` unchanged | monotonic/idempotent effect |
+| update | active | active | same-key compare-and-set + version; a stale `expectedVersion` throws `SessionConflictError` | safe only with version semantics |
 | rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
 | revoke | active/revoked | revoked/deleted | an unconditional same-key write marks the record; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted) | idempotent |
 | destroy | any | deleted | individual writes | idempotent |

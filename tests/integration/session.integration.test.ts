@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
-  SessionConflictError, SessionExpiredError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError, SessionStorageError,
+  SessionConflictError, SessionExpiredError, SessionInvalidError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError, SessionStorageError,
 } from '../../src/index.js';
 import type { KeyManager, SessionConfig, SessionManager, SessionMetrics } from '../../src/index.js';
 import { unknownCredential } from '../support/credential.js';
@@ -53,13 +53,14 @@ describeOnEachTopology('sessions against real Redis', redis => {
     expect(await manager.validate(created.token)).toEqual({ valid: true, session: created.session });
     await expectStoredAsConfigured();
 
+    // A touch extends the session but changes nothing the application can see, so the version stays.
     await manager.touch(created.token);
-    expect((await manager.get(created.token)).version).toBe(created.session.version + 1);
+    expect((await manager.get(created.token)).version).toBe(created.session.version);
     await expectStoredAsConfigured();
 
     // Text outside ASCII is stored as several bytes, which the later writes must still recognise as unchanged.
     const updated = await manager.update(created.token, { metadata: { plan: 'pro', name: 'Zoë 🙂' } });
-    expect(updated.version).toBe(created.session.version + 2);
+    expect(updated.version).toBe(created.session.version + 1);
     expect(await manager.get(created.token)).toEqual(updated);
     await expectStoredAsConfigured();
 
@@ -246,6 +247,40 @@ describeOnEachTopology('sessions against real Redis', redis => {
       const left = (await redis.keysUnder(namespace)).join('\n');
       expect(left).not.toContain(rotated.session.id);
       expect(left).not.toContain(revoked.session.id);
+    });
+  });
+
+  describe('update()', () => {
+    it('accepts the version read before a touch, and keeps what the touch extended', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { touchInterval: 0, idleTimeout: 300 });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+      const read = await sessions.get(token);
+      // A touch in a later server second moves the idle expiry forward.
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      await sessions.touch(token);
+      const touched = await sessions.get(token);
+      expect(touched.idleExpiresAt).toBeGreaterThan(read.idleExpiresAt!);
+
+      const updated = await sessions.update(token, { metadata: { plan: 'pro' } }, read.version);
+      expect(updated).toMatchObject({ version: read.version + 1, idleExpiresAt: touched.idleExpiresAt, lastAccessedAt: touched.lastAccessedAt });
+      expect(await sessions.get(token)).toEqual(updated);
+    });
+
+    it('stores no field whose store flag is off, as create() does', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { storeIpAddress: false, storeUserAgent: false, storeDeviceId: false });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+
+      const updated = await sessions.update(token, { ipAddress: '1.2.3.4', userAgent: 'agent/1.0', deviceId: 'device-1' });
+      expect(updated).not.toHaveProperty('ipAddress');
+      const stored = await redis.storedUnder(namespace);
+      for (const value of ['1.2.3.4', 'agent/1.0', 'device-1']) expect(stored).not.toContain(value);
+    });
+
+    it('refuses a user agent longer than create() accepts', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { storeUserAgent: true });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+      await expectPackageError(() => sessions.update(token, { userAgent: 'a'.repeat(1025) }), SessionInvalidError, 'SESSION_INVALID');
     });
   });
 

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { RedisClientWrapper } from '../redis/index.js';
-import { SessionReplayError, SessionRotationError, SessionStorageError } from './errors.js';
+import { SessionConflictError, SessionReplayError, SessionRotationError, SessionStorageError } from './errors.js';
 import type { SessionConfig } from './config.js';
 import type { SessionKeyStrategy } from './keys.js';
 import type { SessionRecord } from './types.js';
@@ -91,7 +91,8 @@ export class SessionRepository {
       if (attempt > 0 && stored.lastAccessedAt >= now) return { result: 'skipped' };
       const idleDuration = stored.idleTimeoutSeconds ?? this.o.config.idleTimeout ?? this.o.config.ttl;
       const idleExpiresAt = stored.idleExpiresAt === null ? null : Math.min(stored.absoluteExpiresAt ?? Number.MAX_SAFE_INTEGER, now + idleDuration);
-      return { result: 'updated', replacement: { ...stored, lastAccessedAt: now, idleExpiresAt, version: stored.version + 1 }, ttl: stored.expiresAt - now };
+      // A touch changes nothing the application can see, so it leaves the version alone.
+      return { result: 'updated', replacement: { ...stored, lastAccessedAt: now, idleExpiresAt }, ttl: stored.expiresAt - now };
     });
   }
 
@@ -107,15 +108,17 @@ export class SessionRepository {
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
   }
 
-  /** Applies a version-checked replacement to an authoritative session record. */
-  async update(record: SessionRecord, replacement: SessionRecord, expectedVersion: number, now: number): Promise<void> {
-    await this.change(record, stored => {
-      if (!isRecord(stored) || stored.status !== 'active') throw new SessionStorageError('Session update failed');
-      if (stored.version !== expectedVersion) throw new SessionStorageError('Session version conflict');
-      const sameSession = replacement.userId === stored.userId && replacement.jti === stored.jti && replacement.id === stored.id
-        && replacement.createdAt === stored.createdAt && replacement.absoluteExpiresAt === stored.absoluteExpiresAt;
-      if (!sameSession || stored.expiresAt <= now) throw new SessionStorageError('Session update failed');
-      return { result: undefined, replacement, ttl: stored.expiresAt - now };
+  /**
+   * Applies `patch` to the record as stored and returns what was written. The patch is applied to the stored record, not to
+   * the one the caller read, so a touch that landed in between is kept. With an `expectedVersion`, a record at any other
+   * version is refused with {@link SessionConflictError}.
+   */
+  async update(record: SessionRecord, patch: (stored: SessionRecord) => SessionRecord, expectedVersion: number | undefined, now: number): Promise<SessionRecord> {
+    return this.change(record, stored => {
+      if (!isRecord(stored) || stored.status !== 'active' || stored.expiresAt <= now) throw new SessionStorageError('Session update failed');
+      if (expectedVersion !== undefined && stored.version !== expectedVersion) throw new SessionConflictError();
+      const replacement = patch(stored);
+      return { result: replacement, replacement, ttl: stored.expiresAt - now };
     });
   }
 

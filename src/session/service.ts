@@ -6,6 +6,13 @@ import type { SessionTokenManager } from './token.js';
 import type { CreateSessionInput, CreatedSession, RotationResult, SessionMetrics, SessionPatch, SessionRecord, ValidationResult } from './types.js';
 import { RedisClock, type RedisClientWrapper } from '../redis/index.js';
 
+/** The optional client details a session may record, with the flag that lets each be stored and the longest value accepted for it. */
+const CLIENT_FIELDS = [
+  { field: 'deviceId', flag: 'storeDeviceId', maxLength: 256 },
+  { field: 'ipAddress', flag: 'storeIpAddress', maxLength: 128 },
+  { field: 'userAgent', flag: 'storeUserAgent', maxLength: 1024 },
+] as const;
+
 /** Dependencies required by {@link SessionService}. */
 export interface SessionServiceOptions { repository: SessionRepository; tokens: SessionTokenManager; redis: RedisClientWrapper; config: SessionConfig; metrics?: SessionMetrics; }
 
@@ -20,9 +27,7 @@ export class SessionService {
   async create(input: CreateSessionInput): Promise<CreatedSession> {
     validateUserId(input.userId);
     validateMetadata(input.metadata, this.o.config.maxMetadataBytes);
-    validateOptionalString(input.deviceId, 256);
-    validateOptionalString(input.ipAddress, 128);
-    validateOptionalString(input.userAgent, 1024);
+    for (const { field, maxLength } of CLIENT_FIELDS) validateOptionalString(input[field], maxLength);
     if (this.o.config.securityVersionEnabled && input.securityVersion === undefined) throw new SessionInvalidError();
     const now = await this.now();
     const ttl = input.ttl ?? this.o.config.ttl;
@@ -95,14 +100,19 @@ export class SessionService {
   async update(token: string, patch: SessionPatch, expectedVersion?: number): Promise<SessionRecord> {
     const session = await this.get(token);
     validateMetadata(patch.metadata, this.o.config.maxMetadataBytes);
-    const replacement: SessionRecord = { ...session, version: session.version + 1 };
-    if (patch.metadata !== undefined) replacement.metadata = patch.metadata;
-    if (patch.deviceId !== undefined) { if (patch.deviceId === null) delete replacement.deviceId; else replacement.deviceId = patch.deviceId; }
-    if (patch.ipAddress !== undefined) { if (patch.ipAddress === null) delete replacement.ipAddress; else replacement.ipAddress = patch.ipAddress; }
-    if (patch.userAgent !== undefined) { if (patch.userAgent === null) delete replacement.userAgent; else replacement.userAgent = patch.userAgent; }
+    for (const { field, maxLength } of CLIENT_FIELDS) validateOptionalString(patch[field] ?? undefined, maxLength);
     if (expectedVersion !== undefined && expectedVersion !== session.version) throw new SessionConflictError();
-    await this.o.repository.update(session, replacement, expectedVersion ?? session.version, await this.now());
-    return replacement;
+    return this.o.repository.update(session, stored => {
+      const replacement: SessionRecord = { ...stored, version: stored.version + 1 };
+      if (patch.metadata !== undefined) replacement.metadata = patch.metadata;
+      // As in create(), a field whose store flag is off is ignored.
+      for (const { field, flag } of CLIENT_FIELDS) {
+        const value = patch[field];
+        if (value === undefined || !this.o.config[flag]) continue;
+        if (value === null) delete replacement[field]; else replacement[field] = value;
+      }
+      return replacement;
+    }, expectedVersion, await this.now());
   }
 
   /** Consumes the predecessor credential and creates a successor credential with explicit partial-failure semantics. */

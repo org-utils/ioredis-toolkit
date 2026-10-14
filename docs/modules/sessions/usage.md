@@ -122,6 +122,8 @@ await sessions.touch(token);
 
 It is usually appropriate to call this on authenticated requests without writing every request to Redis.
 
+A touch does not change the session's `version`, so a background touch never invalidates a version an `update()` is about to rely on.
+
 ## `update(token, patch, expectedVersion?)`
 
 Updates mutable metadata with optional optimistic concurrency.
@@ -133,7 +135,9 @@ const updated = await sessions.update(token, {
 }, current.version);
 ```
 
-If another writer changed the record first, the expected-version check prevents an unintended lost update.
+`version` counts the changes an application can see: each `update()` and each status change (rotation, revocation) increments it, and `touch()` does not. If another `update()` changed the record after `expectedVersion` was read, the call throws `SessionConflictError` (code `SESSION_CONFLICT`) instead of overwriting it. Without `expectedVersion`, the patch is applied to whatever is stored. Either way, the patch is applied to the record as stored when it is written, so a touch that landed in between is kept.
+
+`update()` follows the same rules as `create()` for client details. `ipAddress`, `userAgent` and `deviceId` are stored only when `storeIpAddress`, `storeUserAgent` and `storeDeviceId` are on, and are otherwise ignored. They are capped at 128, 1024 and 256 characters respectively, and a longer value throws `SessionInvalidError`. Passing `null` clears a stored value.
 
 ## `rotate(token)`
 
