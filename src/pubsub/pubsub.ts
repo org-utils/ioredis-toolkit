@@ -1,5 +1,5 @@
 import { Cluster, type Redis } from 'ioredis';
-import { KeyStrategy, closeConnection, containedReporter, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
+import { KeyStrategy, closeConnection, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
 import { PubSubError, type PubSubConfig, type PubSubMessage, type Subscription } from './types.js';
 
 /** JSON Pub/Sub abstraction using a dedicated subscriber connection. */
@@ -7,11 +7,8 @@ export class RedisPubSub {
   private readonly subscriber: Redis | Cluster;
   private readonly handlers = new Map<string, Set<(message: string) => void>>();
   private readonly keys: KeyStrategy;
-  /**
-   * Creates a Pub/Sub module using the same connection configuration as the shared client. The subscriber connection
-   * always has an `'error'` listener, so an unobserved error never crashes the process; it forwards to `report`.
-   */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: PubSubConfig, report: ErrorReporter<'subscriber'> = containedReporter()) {
+  /** Creates a Pub/Sub module on a duplicate of the shared connection, whose errors go to `report` and never crash the process. */
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: PubSubConfig, report: ErrorReporter<'subscriber'>) {
     this.keys = new KeyStrategy(config.namespace);
     this.subscriber = redis.duplicateConnection();
     reportConnectionErrors(this.subscriber, report, 'subscriber');

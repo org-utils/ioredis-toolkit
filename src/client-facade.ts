@@ -1,4 +1,4 @@
-import { RedisClientWrapper, RedisConfigurationError, closeConnection, containedReporter, createRedisConnection, reportConnectionErrors, type ErrorReporter, type RedisConfig, type RedisConnection } from './redis/index.js';
+import { RedisClientWrapper, RedisConfigurationError, containedReporter, createRedisConnection, reportConnectionErrors, type ErrorReporter, type RedisConfig } from './redis/index.js';
 import { RedisCache, parseCacheConfig, type CacheConfig } from './cache/index.js';
 import { RedisLock, parseLockConfig, type LockConfig } from './lock/index.js';
 import { RedisRateLimiter, parseRateLimitConfig, type RateLimitConfig } from './rate-limit/index.js';
@@ -32,11 +32,7 @@ export interface RedisErrorContext {
 export interface RedisClientDependencies {
   encryptionKeyManager?: KeyManager;
   metrics?: SessionMetrics;
-  /**
-   * Receives errors the client cannot raise to a caller, such as a connection error. Every connection the client
-   * opens keeps a listener of its own, so without a hook those errors are dropped rather than crashing the process.
-   * A hook that throws or rejects is contained.
-   */
+  /** Receives errors no caller can be given, such as a connection error. Without a hook they are dropped; a hook that throws or rejects is contained. */
   onError?: (error: unknown, context: RedisErrorContext) => void;
 }
 
@@ -50,14 +46,13 @@ export class RedisClient extends RedisClientWrapper {
   private sessionModule: SessionManager | undefined;
   private readonly moduleConfig: { cache: CacheConfig; lock: LockConfig; rateLimit: RateLimitConfig; pubsub: PubSubConfig; streams: StreamsConfig; sessions: SessionConfig };
   private readonly dependencies: RedisClientDependencies;
-  private readonly connection: RedisConnection;
   private readonly report: ErrorReporter<RedisErrorSource>;
+  private retiredPubSub: Promise<void> = Promise.resolve();
 
   /** Creates the shared Redis facade and normalizes every module's global configuration. */
   constructor(connection: ReturnType<typeof createRedisConnection>, config: RedisClientConfig, dependencies: RedisClientDependencies = {}) {
     super(connection);
     this.dependencies = dependencies;
-    this.connection = connection;
     this.report = containedReporter(dependencies.onError);
     reportConnectionErrors(connection, this.report, 'connection');
     this.moduleConfig = {
@@ -108,7 +103,7 @@ export class RedisClient extends RedisClientWrapper {
   /** Merges or replaces the global rate-limit configuration and returns this client for fluent chaining. */
   withRateLimit(options: Partial<RateLimitConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.moduleConfig.rateLimit = parseRateLimitConfig(mode === 'merge' ? { ...this.moduleConfig.rateLimit, ...options } : options); this.rateLimitModule = new RedisRateLimiter(this, this.moduleConfig.rateLimit); return this; }
   /** Merges or replaces the global Pub/Sub configuration and returns this client for fluent chaining. */
-  withPubSub(options: Partial<PubSubConfig> = {}, mode: ModuleConfigMode = 'merge'): this { void this.pubsubModule?.close().catch(() => undefined); this.pubsubModule = undefined; this.moduleConfig.pubsub = parsePubSubConfig(mode === 'merge' ? { ...this.moduleConfig.pubsub, ...options } : options); this.pubsubModule = new RedisPubSub(this, this.moduleConfig.pubsub, this.report); return this; }
+  withPubSub(options: Partial<PubSubConfig> = {}, mode: ModuleConfigMode = 'merge'): this { const retiring = this.pubsubModule?.close().catch(() => undefined); this.retiredPubSub = Promise.all([this.retiredPubSub, retiring]).then(() => undefined); this.pubsubModule = undefined; this.moduleConfig.pubsub = parsePubSubConfig(mode === 'merge' ? { ...this.moduleConfig.pubsub, ...options } : options); this.pubsubModule = new RedisPubSub(this, this.moduleConfig.pubsub, this.report); return this; }
   /** Merges or replaces the global Streams configuration and returns this client for fluent chaining. */
   withStreams(options: Partial<StreamsConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.moduleConfig.streams = parseStreamsConfig(mode === 'merge' ? { ...this.moduleConfig.streams, ...options } : options); this.streamsModule = new RedisStreams(this, this.moduleConfig.streams); return this; }
   /** Merges or replaces the global session configuration and returns this client for fluent chaining. */
@@ -116,13 +111,8 @@ export class RedisClient extends RedisClientWrapper {
   /** Alias for withSession for singular naming. */
   withSession(options: Partial<SessionConfig> = {}, mode: ModuleConfigMode = 'merge'): this { return this.withSessions(options, mode); }
 
-  /**
-   * Closes every connection this client opened: the shared connection and the Pub/Sub subscriber connection are quit,
-   * or disconnected if they are not up. Idempotent, and safe whichever modules were used.
-   */
-  async close(): Promise<void> {
-    await Promise.all([this.pubsubModule?.close(), closeConnection(this.connection)]);
-  }
+  /** Closes the shared connection and every Pub/Sub subscriber connection: quit if up, disconnected otherwise. Idempotent. */
+  override async close(): Promise<void> { await Promise.all([this.pubsubModule?.close(), this.retiredPubSub, super.close()]); }
 
   /** Returns a snapshot of normalized global module configuration. */
   get config(): Readonly<typeof this.moduleConfig> { return this.moduleConfig; }

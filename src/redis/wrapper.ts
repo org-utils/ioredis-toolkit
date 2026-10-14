@@ -1,5 +1,6 @@
 import { Cluster } from 'ioredis';
 import { redisHashSlot } from './cluster.js';
+import { closeConnection } from './lifecycle.js';
 import type { ClusterFanoutOptions, RedisCommandClient, RedisConnection, RedisPipeline } from './types.js';
 export type { ClusterFanoutOptions } from './types.js';
 
@@ -116,6 +117,8 @@ export class RedisClientWrapper implements RedisCommandClient {
   pipeline(): RedisPipeline { return this.client.pipeline() as unknown as RedisPipeline; }
   /** Creates a dedicated duplicate connection for Pub/Sub consumers. */
   duplicateConnection(): RedisConnection { return this.client.duplicate() as RedisConnection; }
+  /** Closes the wrapped connection: quit if it is up, disconnected otherwise. Idempotent. */
+  async close(): Promise<void> { await closeConnection(this.client); }
 
   /** Reads multiple keys while preserving input order and grouping Cluster requests by slot. */
   async mgetClusterAware(keys: string[], options: ClusterFanoutOptions = {}): Promise<Array<string | null>> {

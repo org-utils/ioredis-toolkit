@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Cluster } from 'ioredis';
 import { expect, it } from 'vitest';
 import { createRedisClient } from '../../src/index.js';
-import type { RedisClientConfig } from '../../src/index.js';
+import type { RedisClient, RedisClientConfig } from '../../src/index.js';
 import { describeOnEachTopology, eventually } from '../support/redis.js';
 
 describeOnEachTopology('client lifecycle against real Redis', redis => {
@@ -19,25 +19,44 @@ describeOnEachTopology('client lifecycle against real Redis', redis => {
     return lists.flatMap(list => list.split('\n')).filter(line => line.includes(` name=${name} `));
   }
 
+  /** Runs `work` on a client of its own, closed afterwards even if `work` fails, since closing it is what is under test. */
+  async function withClient(config: RedisClientConfig, work: (client: RedisClient) => Promise<void>): Promise<void> {
+    const client = createRedisClient(config);
+    try { await work(client); } finally { await client.close(); }
+  }
+
   it('leaves no connection open once closed, including the Pub/Sub subscriber', async () => {
     const connectionName = `lifecycle-${randomUUID()}`;
-    const client = createRedisClient({ ...namedConfig(connectionName), cache: { enabled: true, namespace: redis.newNamespace() }, pubsub: { enabled: true, namespace: redis.newNamespace() } });
-    await client.cache.set('a', 1);
-    await client.pubsub.subscribe('orders', () => undefined);
-    expect(await connectionsNamed(connectionName)).not.toEqual([]);
+    await withClient({ ...namedConfig(connectionName), cache: { enabled: true, namespace: redis.newNamespace() }, pubsub: { enabled: true, namespace: redis.newNamespace() } }, async client => {
+      await client.cache.set('a', 1);
+      await client.pubsub.subscribe('orders', () => undefined);
+      expect(await connectionsNamed(connectionName)).not.toEqual([]);
 
-    await client.close();
-    await eventually(async () => expect(await connectionsNamed(connectionName)).toEqual([]));
-    await expect(client.close()).resolves.toBeUndefined();
+      await client.close();
+      await eventually(async () => expect(await connectionsNamed(connectionName)).toEqual([]));
+      await expect(client.close()).resolves.toBeUndefined();
+    });
+  });
+
+  it('closes a subscriber that reconfiguring Pub/Sub replaced', async () => {
+    const connectionName = `lifecycle-${randomUUID()}`;
+    await withClient({ ...namedConfig(connectionName), pubsub: { enabled: true, namespace: redis.newNamespace() } }, async client => {
+      await client.pubsub.subscribe('orders', () => undefined);
+      await client.withPubSub({ namespace: redis.newNamespace() }).pubsub.subscribe('orders', () => undefined);
+
+      await client.close();
+      await eventually(async () => expect(await connectionsNamed(connectionName)).toEqual([]));
+    });
   });
 
   it('lets commands already sent complete before the shared connection is quit', async () => {
     const namespace = redis.newNamespace();
-    const client = createRedisClient({ ...redis.connectionConfig(), cache: { enabled: true, namespace } });
-    await client.cache.get('warm-up');
-    const write = client.cache.set('a', 1);
-    await client.close();
-    await write;
-    expect(await redis.keysUnder(namespace)).toEqual([`${namespace}:a`]);
+    await withClient({ ...redis.connectionConfig(), cache: { enabled: true, namespace } }, async client => {
+      await client.cache.get('warm-up');
+      const write = client.cache.set('a', 1);
+      await client.close();
+      await write;
+      expect(await redis.keysUnder(namespace)).toEqual([`${namespace}:a`]);
+    });
   });
 });

@@ -57,4 +57,3 @@ async function quitOrDisconnect(connection: RedisConnection): Promise<void> {
   if (connection.status !== 'ready') { connection.disconnect(); return; }
   try { await connection.quit(); } catch { connection.disconnect(); }
 }
-

@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { createSessionManagerFromRedis, SessionReplayError } from '../../src/index.js';
+import { SessionReplayError } from '../../src/index.js';
 import type { SessionManager } from '../../src/index.js';
 import { keyManager } from '../support/key-manager.js';
 import { describeOnEachTopology } from '../support/redis.js';
@@ -9,7 +9,7 @@ describeOnEachTopology('concurrent rotation', redis => {
     const namespace = redis.newNamespace();
     return storage === 'encrypted'
       ? redis.connectClient({ sessions: { enabled: true, namespace, encryption: { enabled: true } } }, { encryptionKeyManager: keyManager() }).sessions
-      : createSessionManagerFromRedis(redis.connectionConfig(), { enabled: true, namespace }).manager;
+      : redis.connectSessionManager({ enabled: true, namespace });
   }
 
   // On Cluster a losing rotation can read the record before the winner consumes it and its index entry after, and is refused as invalid.

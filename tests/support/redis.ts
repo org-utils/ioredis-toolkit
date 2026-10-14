@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Cluster, Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, it } from 'vitest';
-import { createRedisClient } from '../../src/index.js';
-import type { RedisClient, RedisClientConfig, RedisClientDependencies, RedisConfig } from '../../src/index.js';
+import { createRedisClient, createSessionManagerFromRedis } from '../../src/index.js';
+import type { RedisClient, RedisClientConfig, RedisClientDependencies, RedisConfig, SessionConfig, SessionManager } from '../../src/index.js';
 
 /** A Redis deployment shape every real-server suite runs against. */
 export type Topology = 'standalone' | 'cluster';
@@ -182,6 +182,8 @@ export interface RedisFixture {
   connectionConfig(): RedisConfig;
   /** The client facade on this topology, closed once the suite is done. */
   connectClient(modules?: ModuleSections, dependencies?: RedisClientDependencies): RedisClient;
+  /** The session manager `createSessionManagerFromRedis` builds on this topology. Its connection is closed once the suite is done. */
+  connectSessionManager(sessionConfig: Partial<SessionConfig>): SessionManager;
   /**
    * `it` on standalone. On Cluster the test is known to fail until `ticket` is fixed, with an error whose message, or a cause's,
    * matches `failure`. Such a bug may show only when keys land on different masters, or when a race goes one way, so there
@@ -211,16 +213,16 @@ export interface RedisFixture {
 }
 
 /**
- * Sets up a suite's {@link RedisFixture} on one topology. Afterwards it closes every client it opened and deletes
+ * Sets up a suite's {@link RedisFixture} on one topology. Afterwards it closes every connection it opened and deletes
  * the namespaces it minted. Stored data on a shared server is never flushed.
  */
 function redisFixture(topology: Topology, config: RedisConfig): RedisFixture {
   let observer: Observer;
   const namespaces: string[] = [];
-  const opened: RedisClient[] = [];
+  const opened: Array<{ close(): Promise<void> }> = [];
   beforeAll(async () => { observer = await openObserver(config); });
   afterAll(async () => {
-    await Promise.all(opened.splice(0).map(client => client.close()));
+    await Promise.all(opened.splice(0).map(closable => closable.close()));
     // A topology that never became ready has nothing to clean up, and its error is already the suite's.
     if (!observer) return;
     // One key at a time: a cluster refuses a multi-key DEL across slots.
@@ -235,6 +237,11 @@ function redisFixture(topology: Topology, config: RedisConfig): RedisFixture {
       const client = createRedisClient({ ...config, ...modules }, dependencies);
       opened.push(client);
       return client;
+    },
+    connectSessionManager(sessionConfig) {
+      const { manager, redis } = createSessionManagerFromRedis(config, sessionConfig);
+      opened.push(redis);
+      return manager;
     },
     itFailsOnClusterUntil(ticket, failure, name, test) {
       if (topology !== 'cluster') { it(name, test); return; }

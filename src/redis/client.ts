@@ -21,8 +21,8 @@ function buildConnection(config: RedisConfig): RedisConnection {
  * Creates a topology-appropriate ioredis connection. Always attaches a no-op
  * `'error'` listener: ioredis (like every Node `EventEmitter`) throws an uncaught
  * exception and crashes the process when an `'error'` event fires with zero
- * listeners. Attaching this default does not prevent callers from adding their
- * own listener on the returned connection for real observability/alerting.
+ * listeners. The client facade forwards this connection's errors to its `onError`
+ * hook; a caller using the connection directly can add a listener of its own.
  */
 export function createRedisConnection(config: RedisConfig): RedisConnection {
   const connection = buildConnection(config);
