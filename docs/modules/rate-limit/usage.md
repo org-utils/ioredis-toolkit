@@ -33,15 +33,17 @@ const redis = createRedisClient({
 
 ## Methods
 
-### `key(subject, serverSeconds)`
+### `key(subject)`
 
-Returns the counter key for the fixed window containing `serverSeconds`. Pass Redis server time to get the key the limiter itself uses.
+Returns the key that counts the subject's current window. Each subject has one key: a hash holding the number of the window it counts and that window's count. When a new window starts, the next `consume()` starts the count again from its own cost, and `check()` reads the window as empty.
 
 ```ts
-redis.rateLimiter.key('user:42', 120); // rate-limit:{user:42}:2 for a 60s window
+redis.rateLimiter.key('user:42'); // rate-limit:{user:42}
 ```
 
-The subject is the key's Redis Cluster hash tag, so every window of one subject lands in one hash slot. That is what lets a single script read the server clock and pick the window itself. A subject must not be empty or start with `}`, because either would leave the hash tag empty; such a subject throws `RATE_LIMIT_INPUT`.
+The subject is the key's Redis Cluster hash tag. A subject must not be empty or start with `}`; such a subject throws `RATE_LIMIT_INPUT`.
+
+`key(subject, serverSeconds)` is deprecated: earlier versions gave every window a key of its own, and the second argument named the window. It is still accepted and has no effect.
 
 ### `consume(subject, cost?)`
 
@@ -73,7 +75,7 @@ console.log(state.remaining, state.resetAt);
 
 ### `reset(subject)`
 
-Deletes the current window counter.
+Deletes the subject's key, which resets the current window, in one round trip.
 
 ```ts
 await redis.rateLimiter.reset('user:42');
@@ -94,7 +96,7 @@ await redis.rateLimiter.reset('user:42');
 
 ## Clock
 
-Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. `consume` and `check` read the server clock inside the script that does the work, so each is one round trip; `reset` reads it first and then deletes, which is two. None of them accepts a caller-supplied time. On Redis Cluster the clock is that of the node holding the subject's hash slot, so the nodes' own clocks must be kept in sync. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
+Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. `consume` and `check` read the server clock inside the script that does the work, so each is one round trip; `reset` needs no clock, since a subject's windows share one key. None of them accepts a caller-supplied time. On Redis Cluster the clock is that of the node holding the subject's hash slot, so the nodes' own clocks must be kept in sync. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
 
 ## Fixed-window behavior
 
