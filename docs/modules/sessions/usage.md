@@ -52,7 +52,7 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `absoluteTimeout` | `number` | unset | Optional hard application lifetime. |
 | `touchInterval` | `number` | 60 | Minimum interval between rolling touch writes. |
 | `rolling` | `boolean` | `true` | Enables rolling idle expiration behavior. |
-| `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. |
+| `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. The first `create()` for a user stores its version; see [`setSecurityVersion`](#setsecurityversionuserid-version). |
 | `maxSessionsPerUser` | `number` | 20 | Maximum configured indexed sessions per user. |
 | `maxMetadataBytes` | `number` | 8192 | Maximum metadata JSON size. |
 | `maxBatchSize` | `number` | 200 | Maximum bounded administrative batch. |
@@ -181,6 +181,8 @@ await sessions.setSecurityVersion('user_123', 8);
 ```
 
 A common password-reset/logout-all pattern is to increment the user's security version and then let old sessions fail validation.
+
+With `securityVersionEnabled`, `create()` requires `securityVersion`, and a session validates only while its version equals the one stored for its user. Turning the feature on needs no backfill. When no version is stored for a user, `create()` stores the one it is given, set only if absent, together with the session. `create()` never overwrites a stored version, so only `setSecurityVersion()` moves it, and a session created with an older version than the stored one validates as `invalid` from the start. If the stored version is missing (never written, or evicted under memory pressure), validation fails closed: every session of that user validates as `invalid` until the next `create()` or `setSecurityVersion()` stores one.
 
 ## `revokeAll(userId, limit?)`
 

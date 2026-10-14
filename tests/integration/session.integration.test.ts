@@ -250,6 +250,52 @@ describeOnEachTopology('sessions against real Redis', redis => {
     });
   });
 
+  describe('security versions', () => {
+    /** The one key under a namespace holding a user's security version: a string that is not a session envelope. */
+    async function securityVersionKey(namespace: string): Promise<string> {
+      const keys: string[] = [];
+      for (const key of await redis.keysUnder(namespace)) {
+        if (key.includes('{') && (await redis.observer.type(key)) === 'string' && !(await redis.observer.get(key))!.startsWith('{')) keys.push(key);
+      }
+      expect(keys).toHaveLength(1);
+      return keys[0]!;
+    }
+
+    it('stores the version the first session of a user is created with', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { securityVersionEnabled: true });
+      const created = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      expect(await sessions.validate(created.token)).toEqual({ valid: true, session: created.session });
+    });
+
+    it('never lets create() overwrite a stored version', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      await sessions.setSecurityVersion('integration-user', 4);
+      const stale = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+
+      expect(await redis.observer.get(await securityVersionKey(namespace))).toBe('4');
+      expect(await sessions.validate(stale.token)).toEqual({ valid: false, reason: 'invalid' });
+    });
+
+    it('invalidates sessions created before a bump', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { securityVersionEnabled: true });
+      const before = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      await sessions.setSecurityVersion('integration-user', 4);
+      expect(await sessions.validate(before.token)).toEqual({ valid: false, reason: 'invalid' });
+    });
+
+    it('fails closed while the stored version is missing, until the next create() stores one', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      const existing = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      await redis.observer.del(await securityVersionKey(namespace));
+
+      expect(await sessions.validate(existing.token)).toEqual({ valid: false, reason: 'invalid' });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      expect((await sessions.validate(existing.token)).valid).toBe(true);
+    });
+  });
+
   describe('update()', () => {
     it('accepts the version read before a touch, and keeps what the touch extended', async () => {
       const sessions = sessionsIn(redis.newNamespace(), { touchInterval: 0, idleTimeout: 300 });

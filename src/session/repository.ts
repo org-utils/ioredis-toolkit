@@ -24,7 +24,10 @@ export class SessionRepository {
   /** Creates the repository using shared Redis infrastructure and versioned serializers/scripts. */
   constructor(private readonly o: SessionRepositoryOptions) {}
 
-  /** Persists a session and its derived indexes using the repository's authoritative write semantics. */
+  /**
+   * Persists a session and its derived indexes using the repository's authoritative write semantics. With security versions
+   * enabled, a user with none stored yet gets the session's version, set if absent in the same step.
+   */
   async create(record: SessionRecord): Promise<void> {
     const ttl = Math.max(1, Math.ceil(record.expiresAt - record.createdAt));
     // create_session appends the token hash of each session it evicts to these two keys.
@@ -32,8 +35,10 @@ export class SessionRepository {
     const evictedTokenIndexKey = this.o.keys.tokenIndex('');
     const result = await this.o.scripts.eval(
       'create_session',
-      [this.o.keys.session(record.userId, record.id), this.o.keys.userIndex(record.userId)],
-      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser), evictedSessionKey, evictedTokenIndexKey]
+      [this.o.keys.session(record.userId, record.id), this.o.keys.userIndex(record.userId), this.o.keys.securityVersion(record.userId)],
+      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser), evictedSessionKey, evictedTokenIndexKey,
+        // A user with no stored security version takes the one their session is created with; a stored one is never overwritten.
+        this.o.config.securityVersionEnabled && record.securityVersion !== null ? String(record.securityVersion) : '']
     );
     const code = Number((result as unknown[])[0]);
     if (code !== 1) throw new SessionStorageError('Session creation failed');
