@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.4
+
+### Patch Changes
+
+- 3750167: A blocking stream read no longer stalls the rest of the client. `streams.read()` used to block on the one shared connection, so every session check, cache read, lock and rate-limit call waited behind it for up to `blockMs`, and forever with `blockMs: 0`. Each read now leases a connection of its own from a pool of duplicates that the Streams module grows on demand, and returns it afterwards. Concurrent reads on different streams wait side by side instead of queueing. `blockMs: 0` still means "wait indefinitely", now without freezing anything else.
+  
+  `RedisClient.close()` disconnects the reader connections, so a read still waiting rejects at once. Errors on reader connections reach the `onError` hook with source `stream-reader`.
+  
+  `streams.add()` with no fields now throws `StreamsError` with code `STREAMS_INPUT` without contacting Redis, instead of failing with a Redis argument error.
+- 4d8190e: `revokeAll()` works on Redis Cluster. Before, it failed every time there, because it sent one pipeline mixing the user's session records with their token locators, which live in other hash slots. The records are now deleted in one step in the user's slot, and the token locators afterwards through the cluster-aware delete. The `{ affected, remaining }` result, the `maxBatchSize` bound and the user-ID validation are unchanged.
+- 8fcc3bc: A user at `maxSessionsPerUser` can sign in on Redis Cluster again. The creation script used to delete the evicted session's token locator, which lives in another hash slot, so on Cluster every login over the limit failed, after already logging the user out of one other device. The script now deletes only the evicted session's record, which shares the user's slot, and the token locator is deleted afterwards as best-effort cleanup. An evicted credential validates as `not_found` even if that cleanup fails.
+  
+  A `create()` never evicts the session it is creating. Before, with `maxSessionsPerUser: 1`, two logins in the same second could evict the new session and still report success.
+  
+  Each user's session set now expires with the longest-lived session in it, instead of living forever. A shorter-lived session never shortens it. A set written by an earlier version without an expiry is given one, at the next `create()` for that user, that outlives every session it already holds. The comparison is made in Lua, so Redis 6 keeps working.
+- 6b9bf1f: `cache.clear()` now works on a namespace of any size. It deletes each page of matching keys as the scan returns it, in `DEL`s of at most 500 keys, grouped by hash slot on Cluster. Before, it collected every matching key first, then threw a `RangeError` or sent one enormous `DEL` once the keyspace was large enough. On a Cluster client created just before the call, it also returned `0` and deleted nothing, because the client did not yet know its masters. The count it returns is now exact on Cluster, where concurrent deletes could undercount before.
+  
+  `cache.delete()` with no keys now returns `0` without contacting Redis, instead of failing with a Redis argument error.
+  
+  Cluster-aware behaviour now recognises a Cluster connection by ioredis's own `isCluster` marker instead of `instanceof`. An application that resolves a second copy of ioredis, and passes its `Cluster` to `new RedisClient()`, no longer has cross-slot deletes and reads silently treated as standalone.
+- 696b9b8: `validate()`, and so `get()`, `touch()`, `update()` and `rotate()`, checks a credential in two round trips to Redis, down from four or five: the token locator, then one script in the user's hash slot that reads the session record, its membership in the user's session set, the security version and Redis server time together. `touch()` writes from that same read instead of reading the record and the time again. Because the record and its membership are read at one instant, a losing concurrent `rotate()` of one credential is now always refused with `SessionReplayError`; on Redis Cluster it could before be refused with `SessionInvalidError`. Validation reasons and errors are otherwise unchanged.
+
 ## 1.0.3
 
 ### Patch Changes
