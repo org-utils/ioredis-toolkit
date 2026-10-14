@@ -11,3 +11,5 @@
 ## Consequences
 
 The walk along the chain has no fixed cap, only a guard against a link back to a session already passed, which only corrupt data could hold: a cap low enough to matter would stop the logout of an application that rotates on every request. The walk is bounded by tombstone life instead. A consumed tombstone lives at most 300 seconds, and rotation gives a successor its predecessor's expiry. So if a link has expired, the session it led to has also expired, and there is nothing to revoke. If successor creation failed after the predecessor was consumed, the link leads nowhere, and revoke ends nothing.
+
+_Amended by [ADR-0005](0005-revoke-swaps-and-puts-back.md): where a link leads to a successor that does not exist, revoke now writes a revoked tombstone at the successor's key, only if the key is absent, so that a rotation still creating that successor fails._

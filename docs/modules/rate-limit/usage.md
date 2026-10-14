@@ -28,8 +28,12 @@ const redis = createRedisClient({
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the module. `redis.rateLimiter` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `rate-limit` | Namespace: the first segment of every counter key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
-| `windowSeconds` | `number` | `60` | Fixed-window duration. |
-| `maxRequests` | `number` | `100` | Maximum units per window. |
+| `windowSeconds` | `number` | `60` | Fixed-window duration in seconds. A positive integer, at most `86400`. |
+| `maxRequests` | `number` | `100` | Maximum units per window. A positive integer, at most `10000000`. |
+
+The namespace must not overlap another enabled module's: two namespaces overlap when they are equal or one is a `:`-delimited prefix of the other (`api` and `api:limit`). `createRedisClient()` and `withRateLimit()` throw `RedisConfigurationError` for an overlapping namespace.
+
+`parseRateLimitConfig(input)` validates a configuration and returns the normalized `RateLimitConfig`, throwing `RateLimitError` with code `RATE_LIMIT_CONFIGURATION` when it is invalid. `RedisRateLimiter`, `parseRateLimitConfig`, `RateLimitError` and the types `RateLimitConfig`, `RateLimitResult` and `RateLimitErrorCode` are exported from both `ioredis-toolkit` and `ioredis-toolkit/rate-limit`.
 
 ## Methods
 
@@ -38,7 +42,7 @@ const redis = createRedisClient({
 Returns the key that counts the subject's current window. Each subject has one key: a hash holding the number of the window it counts and that window's count. When a new window starts, the next `consume()` starts the count again from its own cost, and `check()` reads the window as empty.
 
 ```ts
-redis.rateLimiter.key('user:42'); // rate-limit:{user:42}
+redis.rateLimiter.key('user:42'); // api:limit:{user:42}
 ```
 
 The subject is the key's Redis Cluster hash tag. A subject must not be empty or start with `}`; such a subject throws `RATE_LIMIT_INPUT`.
@@ -73,9 +77,11 @@ console.log(state.remaining, state.resetAt);
 
 `check()` is advisory. A concurrent `consume()` can change the result immediately afterward.
 
+`check()` reports whether one more unit would fit: its `allowed` is `count < maxRequests`, while `consume()`'s is `count <= maxRequests` after adding the cost. So a `consume()` that brings the count to exactly `maxRequests` is allowed, and a `check()` after it reports `allowed: false`, `remaining: 0` and the `retryAfterSeconds` left in the window.
+
 ### `reset(subject)`
 
-Deletes the subject's key, which resets the current window, in one round trip.
+Deletes the subject's key, which resets the current window, in one round trip. Returns `true` when there was a key to delete and `false` otherwise.
 
 ```ts
 await redis.rateLimiter.reset('user:42');
@@ -90,9 +96,9 @@ await redis.rateLimiter.reset('user:42');
 - `remaining`: remaining units, never below zero.
 - `resetAt`: Unix timestamp, in Redis server time, at which the current window ends: `(window + 1) × windowSeconds`.
 - `retryAfterSeconds`: when denied, seconds from now until the window ends; otherwise `0`.
+- `count`: current consumed units.
 
 `check()` and `consume()` report the same `resetAt` for the same subject and window.
-- `count`: current consumed units.
 
 ## Clock
 
@@ -106,7 +112,7 @@ Denied requests still count against the window: `consume()` adds its cost whethe
 
 ## Errors
 
-Every error this module raises itself is a `RateLimitError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+Every error this module raises itself is a `RateLimitError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`, typed `RateLimitErrorCode`. A failure reported by Redis or the connection passes through as ioredis raised it.
 
 | Code | Thrown when |
 |---|---|
@@ -119,5 +125,7 @@ A denied request is not an error: `consume()` returns `allowed: false`.
 
 ```ts
 redis.withRateLimit({ maxRequests: 500 });
-redis.withRateLimit({ namespace: 'login' }, 'replace');
+redis.withRateLimit({ enabled: true, namespace: 'login' }, 'replace');
 ```
+
+`'replace'` resets every option it is not given to its default, `enabled: false` included, so pass `enabled: true` or `redis.rateLimiter` throws `RedisConfigurationError` afterwards.

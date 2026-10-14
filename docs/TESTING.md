@@ -2,17 +2,18 @@
 
 The project separates deterministic unit/security tests from real Redis tests.
 
-## Required CI layers
+## What CI runs
 
-1. TypeScript strict typecheck.
-2. ESLint.
-3. Unit tests for token generation, hashing, key hashing, serializer, configuration, cookie serialization, error codes, and Pub/Sub message/error handling (connection error resilience, malformed-message dropping, subscribe/unsubscribe deduplication).
-4. Security tests ensuring no raw-token persistence is part of the repository contract and invalid credentials fail closed.
-5. Concurrency tests against real Redis for simultaneous touch, update, rotate, revoke, and max-session operations.
-6. Standalone integration tests.
-7. Sentinel integration tests with master/replica/Sentinel failover.
-8. Cluster integration tests with multiple primaries/replicas, MOVED/ASK handling, resharding, and node failure.
-9. Load/performance tests using bounded concurrency.
+1. TypeScript strict typecheck (`bun run typecheck`).
+2. ESLint (`bun run lint`).
+3. Unit tests (`tests/unit/`), with no Redis: configuration parsing and validation (`config`), cookie serialization (`cookie`), the error class and code of each failure decided before a command is sent (`errors`), client close and the `onError` hook (`lifecycle`), module configuration, enablement gating and namespace collisions (`modules`), a Pub/Sub subscribe on a lost connection failing without an unhandled error (`pubsub`), and the exports map, public surface and packed tarball described below.
+4. One security suite (`tests/security/malformed-credential.test.ts`): a malformed credential validates as `invalid`, and `get()` of one throws `SessionInvalidError`. That the raw credential is never stored is checked against real Redis in `tests/integration/session.integration.test.ts`.
+5. Concurrency tests (`tests/concurrency/`) against real Redis, in plain and encrypted storage: simultaneous updates at one version, touches, revoke under concurrent touches, and simultaneous rotation, including revoke of a consumed credential while its chain's end rotates.
+6. Integration tests (`tests/integration/`) against standalone Redis and a 3-master Cluster: sessions (including `maxSessionsPerUser`), Pub/Sub (malformed-message dropping, one delivery per handler, concurrent subscribes), Streams, rate limiting, the convenience wrappers, Lua by cached SHA, authoritative time and client lifecycle.
+
+`bun run test` runs layers 3-5 and `bun run test:integration` runs layer 6. `bun run test:watch` reruns the first set on change, and `bun run test:coverage` runs it with V8 coverage (text and HTML reports).
+
+Not yet written: Sentinel failover tests (a Sentinel environment is supplied as a disposable Docker definition, `docker/sentinel.compose.yml`), Cluster tests with replicas, MOVED/ASK handling, resharding or node failure, load/performance tests, and concurrent `maxSessionsPerUser` tests.
 
 ## Real-Redis suites and topologies
 
@@ -48,13 +49,17 @@ CI (`.github/workflows/checks.yml`) runs lint, typecheck and both vitest configu
 
 A test that fails on Cluster because of a known, ticketed bug is declared with `redis.itFailsOnClusterUntil('#<ticket>', /what the failure says/, name, test)` instead of `it`. On standalone it is an ordinary test. On Cluster its title says which ticket it waits on, and it passes as long as the bug still shows: such bugs often show only when keys land on different masters or a race goes one way, so the body runs up to 32 times and the test passes at the first failure whose message, or a cause's, matches the pattern. Any other failure fails the test, so the mark hides only the bug it names. Once every attempt passes, the test fails and says to remove the mark, which is part of fixing the ticket.
 
+## Test helpers
+
+Besides the Redis fixture, `tests/support/` holds small helpers the suites share. `errors.ts` has `expectPackageError`, which asserts that an operation throws or rejects with a package error of a given class and code. `closed-port.ts` finds a loopback port with nothing listening, for clients whose Redis cannot be reached. `credential.ts` holds a credential of the right shape that names no session. `key-manager.ts` builds a key manager for encrypted storage. `hash-slot.ts` computes a key's Cluster hash slot from the specification, since a standalone server refuses `CLUSTER KEYSLOT`. `exports-map.ts` reads the manifest and its exports map, and builds TypeScript programs that resolve through them, for the subpath, public-surface and tarball suites and the configuration declarations check.
+
 ## The exports map
 
 `tests/consumer/` holds one consumer per importable path: `root.ts` for the root, and a file named for each subpath. Each imports from that path alone, by the package's own name. `tests/unit/subpaths.test.ts` compiles them, so they resolve through the `exports` map in `package.json` to the source each target is built from. A subpath that stops resolving, or a name a consumer uses that its path stops exporting, fails that suite with the compiler's own message. The consumers compile against the source, not against the declarations a build emits. Adding a subpath means adding its consumer.
 
 ## The public surface
 
-`tests/unit/public-surface.test.ts` lists, by hand, every name the root and each subpath export: the values that exist at runtime, and the names that exist only as types. It compares that list with what the root barrel and each entry point actually export, in both directions. The paths come from the exports map, so a subpath added there fails the suite until its surface is written. Exporting a new name fails the suite until the name is added to the list, so widening the public surface is a deliberate act, and a name ADR-0003 places internal has no line to go on. Removing or renaming a listed name fails it too, which is the prompt to write the changeset.
+`tests/unit/public-surface.test.ts` lists, by hand, every name the root and each subpath export: the values that exist at runtime, and the names that exist only as types. It compares that list with what the root barrel and each entry point actually export, in both directions. The paths come from the exports map, so a subpath added there fails the suite until its surface is written. Exporting a new name fails the suite until the name is added to the list, so widening the public surface is a deliberate act, and a name [ADR-0003](https://github.com/org-utils/ioredis-toolkit/blob/main/docs/adr/0003-facade-only-public-surface.md) places internal has no line to go on. Removing or renaming a listed name fails it too, which is the prompt to write the changeset.
 
 ## The packed tarball
 
@@ -82,4 +87,4 @@ Production verification should include:
 - Redis memory pressure;
 - old backup restore scenarios.
 
-The real-Redis suites run against standalone Redis and a 3-master Cluster. A Sentinel environment is supplied as a disposable Docker definition; Sentinel failover and Cluster failover/resharding tests are not yet written.
+Primary failure and promotion and cluster slot migration wait on the Sentinel and Cluster tests listed as not yet written under [What CI runs](#what-ci-runs).

@@ -1,3 +1,6 @@
+# package.json `files` is the allowlist of what the tarball carries, and npm does not let this
+# file exclude anything it names: `docs/` is published, except `docs/agents/` and `docs/adr/`.
+# The entries below only matter for paths `files` does not name.
 
 # =====================================================
 # Source Control
@@ -56,16 +59,13 @@ pnpm-debug.log*
 yarn-debug.log*
 
 # =====================================================
-# Documentation (optional)
-# Remove these if you want them published.
+# Examples
 # =====================================================
-docs/
 examples/
 
 # =====================================================
 # CI
 # =====================================================
-.github/
 .gitlab/
 
 # =====================================================

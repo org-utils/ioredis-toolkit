@@ -15,15 +15,15 @@ export class SessionManager {
   touch(token: string): Promise<void> { return this.service.touch(token); }
   /** Updates mutable session metadata with optional optimistic concurrency control. */
   update(token: string, patch: SessionPatch, expectedVersion?: number): Promise<SessionRecord> { return this.service.update(token, patch, expectedVersion); }
-  /** Atomically consumes a predecessor and creates a successor token. */
+  /** Consumes a predecessor atomically, then creates its successor in a separate step. */
   rotate(token: string): Promise<RotationResult> { return this.service.rotate(token); }
-  /** Permanently removes the session's stored record and derived indexes. */
+  /** Permanently removes the session's record, its token locator and its member of the user's session set. */
   destroy(token: string): Promise<void> { return this.service.destroy(token); }
   /** Marks a session unusable for authentication. */
   revoke(token: string): Promise<void> { return this.service.revoke(token); }
   /** Sets the user's security version used by session validation when enabled. */
   setSecurityVersion(userId: string, version: number): Promise<void> { return this.service.setSecurityVersion(userId, version); }
-  /** Revokes a bounded number of sessions for a user and reports how many remain in the user's session set. */
+  /** Deletes a bounded batch of a user's sessions outright, leaving no tombstone, and reports how many remain in the user's session set. */
   revokeAll(userId: string, limit?: number): Promise<{ affected: number; remaining: number }> { return this.service.revokeAll(userId, limit); }
   /** Lists a bounded page of sessions for a user. */
   list(userId: string, offset?: number, limit?: number): Promise<SessionRecord[]> { return this.service.list(userId, offset, limit); }
