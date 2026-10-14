@@ -1,4 +1,7 @@
-import { expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { PubSubError } from '../../src/index.js';
+import type { RedisErrorContext } from '../../src/index.js';
+import { expectPackageError } from '../support/errors.js';
 import { describeOnEachTopology, eventually } from '../support/redis.js';
 
 describeOnEachTopology('Pub/Sub against real Redis', redis => {
@@ -64,5 +67,105 @@ describeOnEachTopology('Pub/Sub against real Redis', redis => {
     expect(await redis.subscribersTo(`${namespace}:orders`)).toBe(1);
     await pubsub.close();
     await eventually(async () => expect(await redis.subscribersTo(`${namespace}:orders`)).toBe(0));
+  });
+
+  describe('handler failures', () => {
+    // A rejection nobody handles would crash a Node 22 process; here it is only recorded.
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown): void => { unhandled.push(reason); };
+    beforeEach(() => { unhandled.length = 0; process.on('unhandledRejection', record); });
+    afterEach(() => { process.off('unhandledRejection', record); });
+
+    /** A Pub/Sub client whose error hook records what it hears. */
+    function reportingPubSub() {
+      const namespace = redis.newNamespace();
+      const heard: Array<{ error: unknown; context: RedisErrorContext }> = [];
+      const { pubsub } = redis.connectClient({ pubsub: { enabled: true, namespace } }, { onError: (error, context) => { heard.push({ error, context }); } });
+      return { pubsub, namespace, heard };
+    }
+
+    it('runs the other handlers on a channel when one throws, and reports the throw', async () => {
+      const { pubsub, heard } = reportingPubSub();
+      const failure = new Error('handler failed');
+      const received: unknown[] = [];
+      await pubsub.subscribe('orders', () => { throw failure; });
+      await pubsub.subscribe('orders', message => { received.push(message.value); });
+      await pubsub.publish('orders', 1);
+
+      await eventually(() => expect(received).toEqual([1]));
+      expect(heard).toEqual([{ error: failure, context: { source: 'pubsub-handler', channel: 'orders' } }]);
+    });
+
+    it('reports an async handler that rejects, leaving no unhandled rejection', async () => {
+      const { pubsub, heard } = reportingPubSub();
+      const failure = new Error('handler failed');
+      await pubsub.subscribe('orders', async () => { throw failure; });
+      await pubsub.publish('orders', 1);
+
+      await eventually(() => expect(heard).toEqual([{ error: failure, context: { source: 'pubsub-handler', channel: 'orders' } }]));
+      // Long enough for Node to have flagged the rejection, had nothing handled it.
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    });
+
+    it('reports a message that is not JSON as PUBSUB_SERIALIZATION', async () => {
+      const { pubsub, namespace, heard } = reportingPubSub();
+      await pubsub.subscribe('orders', () => undefined);
+      await redis.observer.publish(`${namespace}:orders`, 'not json');
+
+      await eventually(() => expect(heard).toHaveLength(1));
+      expect(heard[0]!.context).toEqual({ source: 'pubsub-handler', channel: 'orders' });
+      await expectPackageError(() => { throw heard[0]!.error; }, PubSubError, 'PUBSUB_SERIALIZATION');
+    });
+  });
+
+  describe('subscription state', () => {
+    it('subscribes again after a subscribe that failed', async () => {
+      // With no offline queue, a subscribe sent before the subscriber connection is up fails at once, as on a lost connection.
+      const { pubsub } = redis.connectClient({ ...redis.connectionConfig(), lazyConnect: true, enableOfflineQueue: false, pubsub: { enabled: true, namespace: redis.newNamespace() } });
+      await expect(pubsub.subscribe('orders', () => undefined)).rejects.toThrow();
+
+      const received: unknown[] = [];
+      await eventually(async () => { await pubsub.subscribe('orders', message => { received.push(message.value); }); });
+      // The shared connection has no offline queue either, so it takes publishes only once it is up.
+      await eventually(async () => { await pubsub.publish('orders', 1); });
+      await eventually(() => expect(received).toEqual([1]));
+    });
+
+    it('resolves each of two concurrent subscribes to a channel only once Redis has confirmed it', async () => {
+      const client = redis.connectClient({ pubsub: { enabled: true, namespace: redis.newNamespace() } });
+      // A shared connection already up publishes at once, while the subscriber connection is still connecting.
+      await client.ping();
+      const { pubsub } = client;
+      const received = { first: [] as unknown[], second: [] as unknown[] };
+      /** Subscribes, and publishes the moment the subscribe resolves: a subscriber not yet confirmed by Redis would miss it. */
+      const subscribeThenPublish = async (name: 'first' | 'second'): Promise<void> => {
+        await pubsub.subscribe('orders', message => { received[name].push(message.value); });
+        await pubsub.publish('orders', `after ${name}`);
+      };
+      await Promise.all([subscribeThenPublish('first'), subscribeThenPublish('second')]);
+
+      await eventually(() => {
+        expect(received.first).toEqual(expect.arrayContaining(['after first', 'after second']));
+        expect(received.second).toEqual(expect.arrayContaining(['after first', 'after second']));
+      });
+    });
+
+    it('refuses to reconfigure Pub/Sub while a subscription is live, and keeps it receiving', async () => {
+      const client = redis.connectClient({ pubsub: { enabled: true, namespace: redis.newNamespace() } });
+      const received: unknown[] = [];
+      await client.pubsub.subscribe('orders', message => { received.push(message.value); });
+
+      await expectPackageError(() => client.withPubSub({ maxMessageBytes: 1_024 }), PubSubError, 'PUBSUB_STATE');
+      await client.pubsub.publish('orders', 1);
+      await eventually(() => expect(received).toEqual([1]));
+    });
+
+    it('reconfigures Pub/Sub once its subscriptions are gone', async () => {
+      const client = redis.connectClient({ pubsub: { enabled: true, namespace: redis.newNamespace() } });
+      const subscription = await client.pubsub.subscribe('orders', () => undefined);
+      await subscription.unsubscribe();
+      expect(client.withPubSub({ maxMessageBytes: 1_024 }).config.pubsub.maxMessageBytes).toBe(1_024);
+    });
   });
 });

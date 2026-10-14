@@ -27,7 +27,8 @@ describeOnEachTopology('client lifecycle against real Redis', redis => {
   it('closes a subscriber that reconfiguring Pub/Sub replaced', async () => {
     const connectionName = `lifecycle-${randomUUID()}`;
     await withClient({ ...redis.namedConnectionConfig(connectionName), pubsub: { enabled: true, namespace: redis.newNamespace() } }, async client => {
-      await client.pubsub.subscribe('orders', () => undefined);
+      // Pub/Sub is reconfigured only once its subscriptions are gone; the subscriber it replaced is closed in the background.
+      await (await client.pubsub.subscribe('orders', () => undefined)).unsubscribe();
       await client.withPubSub({ namespace: redis.newNamespace() }).pubsub.subscribe('orders', () => undefined);
 
       await client.close();
