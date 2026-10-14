@@ -1,5 +1,5 @@
 import type { Cluster, Redis } from 'ioredis';
-import { KeyStrategy, closeConnection, connectionClosedError, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
+import { KeyStrategy, closeConnection, connectionClosedError, containedReporter, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
 import { PubSubError, type PubSubConfig, type PubSubMessage, type Subscription } from './types.js';
 
 /** A handler as registered: given the decoded value, it delivers the message. */
@@ -17,13 +17,14 @@ export class RedisPubSub {
   private readonly keys: KeyStrategy;
   /**
    * Creates a Pub/Sub module whose subscriptions run on a duplicate of the shared connection, opened by the first
-   * subscribe. Errors on that connection, and every failure of a handler, go to `report` and never crash the process.
+   * subscribe. Errors on that connection, and every failure of a handler, go to `report` and never crash the process;
+   * without a `report` they are dropped.
    * `onLiveChange` is told whether any subscription is live each time that changes.
    */
   constructor(
     private readonly redis: RedisClientWrapper,
     private readonly config: PubSubConfig,
-    private readonly report: ErrorReporter<'subscriber' | 'pubsub-handler'>,
+    private readonly report: ErrorReporter<'subscriber' | 'pubsub-handler'> = containedReporter(),
     private readonly onLiveChange: (live: boolean) => void = () => undefined,
   ) {
     this.keys = new KeyStrategy(config.namespace);

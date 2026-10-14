@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createRedisClient } from '../../src/index.js';
+import { RedisPubSub, createRedisClient, parsePubSubConfig } from '../../src/index.js';
 import { closedPort } from '../support/closed-port.js';
 
 describe('Pub/Sub', () => {
@@ -11,6 +11,19 @@ describe('Pub/Sub', () => {
       await expect(pubsub.subscribe('orders', () => undefined)).rejects.toThrow();
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
+      unhandled.mockRestore();
+    }
+  });
+
+  it('contains subscriber errors when constructed directly without a reporter', async () => {
+    const unhandled = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const client = createRedisClient({ mode: 'standalone', host: '127.0.0.1', port: await closedPort(), lazyConnect: true, retryStrategy: () => null });
+    try {
+      const pubsub = new RedisPubSub(client, parsePubSubConfig({ enabled: true }));
+      await expect(pubsub.subscribe('orders', () => undefined)).rejects.toThrow();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
       unhandled.mockRestore();
     }
   });
