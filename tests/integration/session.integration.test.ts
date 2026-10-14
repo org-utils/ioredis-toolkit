@@ -191,6 +191,40 @@ describeOnEachTopology('sessions against real Redis', redis => {
     });
   });
 
+  describe('revokeAll()', () => {
+    it('ends every session of a user and leaves none of their keys', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = [];
+      for (let i = 0; i < 5; i += 1) created.push(await sessions.create({ userId: 'integration-user' }));
+
+      expect(await sessions.revokeAll('integration-user')).toEqual({ affected: 5, remaining: 0 });
+      for (const { token } of created) expect(await sessions.validate(token)).toEqual({ valid: false, reason: 'not_found' });
+      const stored = await redis.storedUnder(namespace);
+      for (const { session } of created) expect(stored).not.toContain(session.id);
+    });
+
+    it('revokes at most the limit at a time and reports the rest until they are drained', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const created = [];
+      for (let i = 0; i < 5; i += 1) created.push(await sessions.create({ userId: 'integration-user' }));
+
+      expect(await sessions.revokeAll('integration-user', 2)).toEqual({ affected: 2, remaining: 3 });
+      expect(await sessions.revokeAll('integration-user', 2)).toEqual({ affected: 2, remaining: 1 });
+      expect(await sessions.revokeAll('integration-user', 2)).toEqual({ affected: 1, remaining: 0 });
+      expect(await sessions.revokeAll('integration-user', 2)).toEqual({ affected: 0, remaining: 0 });
+      for (const { token } of created) expect(await sessions.validate(token)).toEqual({ valid: false, reason: 'not_found' });
+    });
+
+    it('leaves the sessions of other users alone', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const other = await sessions.create({ userId: 'other-user' });
+      await sessions.create({ userId: 'integration-user' });
+      await sessions.revokeAll('integration-user');
+      expect((await sessions.validate(other.token)).valid).toBe(true);
+    });
+  });
+
   it("keeps one user's keys in a single hash slot chosen by the user", async () => {
     /** A namespace's keys split by whether they carry a hash tag; a key found by credential alone carries none. */
     async function keysByTag(namespace: string): Promise<{ tagged: string[]; untagged: string[] }> {

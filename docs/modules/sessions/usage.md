@@ -186,7 +186,7 @@ With `securityVersionEnabled`, `create()` requires `securityVersion`, and a sess
 
 ## `revokeAll(userId, limit?)`
 
-Revokes a bounded batch and returns `{ affected, remaining }` so large user indexes do not require loading every session into memory.
+Revokes a bounded batch and returns `{ affected, remaining }` so large user indexes do not require loading every session into memory. The revoked sessions are deleted outright, so their credentials then validate as `not_found`. It works the same on standalone Redis and on Cluster.
 
 ```ts
 let page = await sessions.revokeAll('user_123', 200);

@@ -181,23 +181,26 @@ export class SessionRepository {
     return records;
   }
 
-  /** Revokes a bounded batch and returns the number of indexed sessions remaining. */
+  /**
+   * Revokes a bounded batch and returns the number of indexed sessions remaining. The records and the user's session set
+   * share the user's slot, so they go in one pipeline; the token locators live in other slots and are deleted after, as
+   * best-effort cleanup, since a session whose record is gone is unusable already.
+   */
   async revokeAll(userId: string, limit: number): Promise<{ affected: number; remaining: number }> {
     const bounded = Math.min(Math.max(1, limit), this.o.config.maxBatchSize);
-    const members = await this.o.redis.zrange(this.o.keys.userIndex(userId), 0, bounded - 1);
+    const setKey = this.o.keys.userIndex(userId);
+    const members = await this.o.redis.zrange(setKey, 0, bounded - 1);
     if (!members.length) return { affected: 0, remaining: 0 };
     const userTag = this.o.keys.userTag(userId);
     const pipeline = this.o.redis.pipeline();
-    for (const tokenHash of members) {
-      pipeline.del(this.o.keys.sessionByTag(userTag, tokenHash));
-      pipeline.del(this.o.keys.tokenIndex(tokenHash));
-    }
+    pipeline.del(...members.map(tokenHash => this.o.keys.sessionByTag(userTag, tokenHash)));
+    pipeline.zrem(setKey, ...members);
+    pipeline.zcard(setKey);
     const results = await pipeline.exec();
     if (!results) throw new SessionStorageError('Redis pipeline unavailable');
     if (results.some(([error]) => error)) throw new SessionStorageError('One or more revokeAll operations failed');
-    await this.o.redis.zrem(this.o.keys.userIndex(userId), ...members);
-    const remaining = await this.o.redis.zcard(this.o.keys.userIndex(userId));
-    return { affected: members.length, remaining };
+    await this.safeDel(...members.map(tokenHash => this.o.keys.tokenIndex(tokenHash)));
+    return { affected: members.length, remaining: Number(results[2]![1]) };
   }
 
   /**
