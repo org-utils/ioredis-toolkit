@@ -166,6 +166,80 @@ describeOnEachTopology('sessions against real Redis', redis => {
     expect(hashSlot(other.tagged[0]!)).not.toBe(hashSlot(user.tagged[0]!));
   });
 
+  describe('token locators', () => {
+    /** The most a tombstone, and so a spent credential's locator, lives: the session's remaining lifetime, capped at 300 seconds. */
+    const TOMBSTONE_TTL = 300;
+
+    /** The locator of a session: the one key under the namespace that names the session id and carries no hash tag, since a credential alone must find it. */
+    async function locatorOf(namespace: string, sessionId: string): Promise<string> {
+      const locators = (await redis.keysUnder(namespace)).filter(key => key.includes(sessionId) && !key.includes('{'));
+      expect(locators).toHaveLength(1);
+      return locators[0]!;
+    }
+
+    it('expires the locator of a rotated session with its tombstone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(created.token);
+
+      const ttl = await redis.observer.ttl(await locatorOf(namespace, created.session.id));
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(TOMBSTONE_TTL);
+    });
+
+    it('expires the locator of a revoked session with its tombstone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.revoke(created.token);
+
+      const ttl = await redis.observer.ttl(await locatorOf(namespace, created.session.id));
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(TOMBSTONE_TTL);
+    });
+
+    it('keeps reporting a rotated credential as consumed, and a revoked one as revoked, while the tombstone lasts', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const rotated = await sessions.create({ userId: 'integration-user' });
+      const revoked = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(rotated.token);
+      await sessions.revoke(revoked.token);
+
+      expect(await sessions.validate(rotated.token)).toEqual({ valid: false, reason: 'consumed' });
+      await expectPackageError(() => sessions.rotate(rotated.token), SessionReplayError, 'SESSION_REPLAY');
+      expect(await sessions.validate(revoked.token)).toEqual({ valid: false, reason: 'revoked' });
+    });
+
+    it('leaves at most one short-lived locator per rotation', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      let current = await sessions.create({ userId: 'integration-user' });
+      for (let rotation = 0; rotation < 10; rotation += 1) current = await sessions.rotate(current.token);
+
+      const spent = (await redis.keysUnder(namespace)).filter(key => !key.includes('{') && !key.includes(current.session.id));
+      expect(spent.length).toBeLessThanOrEqual(10);
+      for (const locator of spent) expect(await redis.observer.ttl(locator)).toBeLessThanOrEqual(TOMBSTONE_TTL);
+    });
+
+    it('reports a spent credential as not found, and leaves none of its keys, once the tombstone is gone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { ttl: 2 });
+      const rotated = await sessions.create({ userId: 'integration-user' });
+      const revoked = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(rotated.token);
+      await sessions.revoke(revoked.token);
+
+      // Every key here was written to live at most as long as the 2-second sessions.
+      await new Promise(resolve => setTimeout(resolve, 2_100));
+      expect(await sessions.validate(rotated.token)).toEqual({ valid: false, reason: 'not_found' });
+      expect(await sessions.validate(revoked.token)).toEqual({ valid: false, reason: 'not_found' });
+      const left = (await redis.keysUnder(namespace)).join('\n');
+      expect(left).not.toContain(rotated.session.id);
+      expect(left).not.toContain(revoked.session.id);
+    });
+  });
+
   describe('stored envelope', () => {
     it('reads back a version 1 envelope it did not write', async () => {
       const namespace = redis.newNamespace();

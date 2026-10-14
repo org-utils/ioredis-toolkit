@@ -99,6 +99,7 @@ export class SessionRepository {
       if (!isRecord(stored) || stored.status === 'revoked' || hasExpired(stored, now)) throw new SessionRotationError('Session cannot be rotated');
       return { result: undefined, replacement: { ...stored, status: 'consumed', consumedAt: now, version: stored.version + 1 }, ttl: Math.max(1, tombstoneTtl) };
     });
+    await this.expireLocator(record.id, Math.max(1, tombstoneTtl));
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
   }
@@ -130,6 +131,7 @@ export class SessionRepository {
         else await this.o.redis.set(key, revoked, 'XX', 'EX', String(tombstoneTtl));
       } catch (error) { throw new SessionStorageError('Session revocation failed', error); }
     }
+    await this.expireLocator(record.id, tombstoneTtl);
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
   }
@@ -203,6 +205,19 @@ export class SessionRepository {
     if (raw === null) return { raw, stored: 'missing' };
     try { return { raw, stored: this.o.serializer.deserialize(raw) }; }
     catch { return { raw, stored: 'unreadable' }; }
+  }
+
+  /**
+   * Cuts a spent session's token locator to the life of its tombstone, so the credential keeps resolving to the tombstone
+   * while it lasts and leaves nothing behind once it is gone. Best effort: a locator left longer resolves to a missing
+   * record, which reads as not found and is deleted then.
+   */
+  private async expireLocator(tokenHash: string, tombstoneTtl: number): Promise<void> {
+    const key = this.o.keys.tokenIndex(tokenHash);
+    try {
+      if (tombstoneTtl < 1) await this.o.redis.del(key);
+      else await this.o.redis.expire(key, tombstoneTtl);
+    } catch { /* derived cleanup is best effort */ }
   }
 
   private async safeDel(key: string): Promise<void> { try { await this.o.redis.del(key); } catch { /* derived cleanup is best effort */ } }

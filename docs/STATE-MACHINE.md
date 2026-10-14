@@ -16,8 +16,8 @@ DELETED (physical cleanup)
 ### Rules
 
 - `ACTIVE` is the only state that can authenticate.
-- `CONSUMED` cannot authenticate and is retained only for bounded replay detection.
-- `REVOKED` cannot authenticate.
+- `CONSUMED` cannot authenticate and is retained only for bounded replay detection: a tombstone of at most 300 seconds, whose token locator is cut to expire with it.
+- `REVOKED` cannot authenticate, and is retained as a tombstone the same way.
 - Redis TTL may physically delete any state after its security usefulness ends.
 - `destroy` is physical deletion and idempotent.
 - `revoke` is logical denial and idempotent.
