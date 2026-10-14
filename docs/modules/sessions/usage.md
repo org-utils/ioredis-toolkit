@@ -164,7 +164,7 @@ Revocation is idempotent from the application's perspective. `revoke()` (and rot
 
 A revoked or rotated session's record is kept as a tombstone for the rest of its lifetime, capped at 300 seconds. Its token locator, the key that maps the credential to its user, is cut to expire with the tombstone. While the tombstone lasts, a rotated credential presented again validates as `consumed` (and `rotate()` throws `SessionReplayError`), and a revoked one as `revoked`. Once the tombstone has expired, both validate as `not_found` and none of their keys remain, however often a session is rotated.
 
-`revoke()` given a credential that rotation already consumed marks its tombstone `revoked`, so it validates as `revoked` rather than `consumed` from then on, and its tombstone's 300-second cap starts again. The session that replaced it stays active: to end every session of a user, use `revokeAll()`, or `setSecurityVersion()` with `securityVersionEnabled`.
+`revoke()` given a credential that rotation already consumed ends its successor, the session that replaced it: it follows the rotation chain to its end and revokes the session there, if that one is still active. So a user logging out with a stale cookie is logged out. The consumed credential itself is left as it is, so it keeps validating as `consumed`, and `rotate()` on it keeps throwing `SessionReplayError`. Replay on its own ends no session, because two requests that rotate concurrently look the same as a stolen credential. To end every session of a user when you see `SessionReplayError`, call `revokeAll()`, or `setSecurityVersion()` with `securityVersionEnabled`.
 
 ## `destroy(token)`
 
