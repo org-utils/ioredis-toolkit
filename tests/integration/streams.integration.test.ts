@@ -85,6 +85,18 @@ describeOnEachTopology('Streams against real Redis', redis => {
     await eventually(async () => expect(await redis.connectionsNamed(connectionName)).toEqual([]));
   });
 
+  it('returns a pending entry deleted since delivery with empty fields, so the consumer can still acknowledge it', async () => {
+    const { client } = namedClient();
+    await client.streams.createGroup('orders', 'workers');
+    const id = await client.streams.add('orders', { a: '1' });
+    await client.streams.read('orders', { group: 'workers', consumer: 'c', blockMs: 1 });
+    await client.streams.delete('orders', id);
+
+    expect(await client.streams.read('orders', { group: 'workers', consumer: 'c', id: '0', blockMs: 1 })).toEqual([{ id, fields: {} }]);
+    expect(await client.streams.ack('orders', 'workers', id)).toBe(1);
+    expect(await client.streams.read('orders', { group: 'workers', consumer: 'c', id: '0', blockMs: 1 })).toEqual([]);
+  });
+
   it('refuses blocking reads once the Streams module is closed, leaving the shared connection free', async () => {
     const { client } = namedClient();
     await client.streams.close();
