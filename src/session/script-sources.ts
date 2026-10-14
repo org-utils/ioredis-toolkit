@@ -1,6 +1,7 @@
 export const SCRIPT_SOURCES = {
   'create_session': `-- KEYS[1] session key
 -- KEYS[2] user index
+-- KEYS[3] the user's security version
 -- ARGV[1] serialized record
 -- ARGV[2] ttl seconds
 -- ARGV[3] createdAt score
@@ -8,8 +9,10 @@ export const SCRIPT_SOURCES = {
 -- ARGV[5] max sessions (0 = unlimited)
 -- ARGV[6] this user's session key, less the token hash
 -- ARGV[7] token index key, less the token hash
+-- ARGV[8] security version to store if the user has none, or '' to leave it alone
 local created = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
 if not created then return {-1} end
+if ARGV[8] ~= '' then redis.call('SET', KEYS[3], ARGV[8], 'NX') end
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 if tonumber(ARGV[5]) > 0 then
   local count = redis.call('ZCARD', KEYS[2])

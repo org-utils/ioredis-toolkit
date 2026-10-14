@@ -1,13 +1,14 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
-  SessionConflictError, SessionExpiredError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError, SessionStorageError,
+  SessionConflictError, SessionExpiredError, SessionInvalidError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError, SessionStorageError,
 } from '../../src/index.js';
 import type { KeyManager, SessionConfig, SessionManager, SessionMetrics } from '../../src/index.js';
 import { unknownCredential } from '../support/credential.js';
 import { expectPackageError } from '../support/errors.js';
 import { hashSlot } from '../support/hash-slot.js';
 import { describeOnEachTopology } from '../support/redis.js';
-import { keyManager } from '../support/key-manager.js';
+import { keyManager, keyManagerHolding } from '../support/key-manager.js';
 
 /** The secret half of an opaque credential; the other half is the JTI, which is stored by design. */
 function secretOf(token: string): string { return token.slice(token.indexOf('.') + 1); }
@@ -27,6 +28,14 @@ describeOnEachTopology('sessions against real Redis', redis => {
     return holding[0]!;
   }
 
+  /** The one key under a namespace holding a user's session set, the sorted set of that user's sessions. */
+  async function sessionSetKey(namespace: string): Promise<string> {
+    const sets: string[] = [];
+    for (const key of await redis.keysUnder(namespace)) if ((await redis.observer.type(key)) === 'zset') sets.push(key);
+    expect(sets).toHaveLength(1);
+    return sets[0]!;
+  }
+
   it.each(['plain', 'encrypted'] as const)('creates, validates, touches, updates, rotates, revokes and destroys a session in %s storage', async storage => {
     const namespace = redis.newNamespace();
     const lifetime = { rolling: true, touchInterval: 0, ttl: 600, idleTimeout: 300, absoluteTimeout: 600 };
@@ -44,13 +53,14 @@ describeOnEachTopology('sessions against real Redis', redis => {
     expect(await manager.validate(created.token)).toEqual({ valid: true, session: created.session });
     await expectStoredAsConfigured();
 
+    // A touch extends the session but changes nothing the application can see, so the version stays.
     await manager.touch(created.token);
-    expect((await manager.get(created.token)).version).toBe(created.session.version + 1);
+    expect((await manager.get(created.token)).version).toBe(created.session.version);
     await expectStoredAsConfigured();
 
     // Text outside ASCII is stored as several bytes, which the later writes must still recognise as unchanged.
     const updated = await manager.update(created.token, { metadata: { plan: 'pro', name: 'Zoë 🙂' } });
-    expect(updated.version).toBe(created.session.version + 2);
+    expect(updated.version).toBe(created.session.version + 1);
     expect(await manager.get(created.token)).toEqual(updated);
     await expectStoredAsConfigured();
 
@@ -164,6 +174,238 @@ describeOnEachTopology('sessions against real Redis', redis => {
     const other = await keysByTag(elsewhere);
     expect(other.tagged.length).toBeGreaterThan(1);
     expect(hashSlot(other.tagged[0]!)).not.toBe(hashSlot(user.tagged[0]!));
+  });
+
+  describe('token locators', () => {
+    /** The most a tombstone, and so a spent credential's locator, lives: the session's remaining lifetime, capped at 300 seconds. */
+    const TOMBSTONE_TTL = 300;
+
+    /** The locator of a session: the one key under the namespace that names the session id and carries no hash tag, since a credential alone must find it. */
+    async function locatorOf(namespace: string, sessionId: string): Promise<string> {
+      const locators = (await redis.keysUnder(namespace)).filter(key => key.includes(sessionId) && !key.includes('{'));
+      expect(locators).toHaveLength(1);
+      return locators[0]!;
+    }
+
+    it('expires the locator of a rotated session with its tombstone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(created.token);
+
+      const ttl = await redis.observer.ttl(await locatorOf(namespace, created.session.id));
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(TOMBSTONE_TTL);
+    });
+
+    it('expires the locator of a revoked session with its tombstone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.revoke(created.token);
+
+      const ttl = await redis.observer.ttl(await locatorOf(namespace, created.session.id));
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(TOMBSTONE_TTL);
+    });
+
+    it('does not let a second revoke() keep the locator past the tombstone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.revoke(created.token);
+      // Longer than the second that expiries are set to, so a locator cut again by the second revoke would stand out.
+      await new Promise(resolve => setTimeout(resolve, 1_100));
+      await sessions.revoke(created.token);
+
+      const [record] = (await redis.keysUnder(namespace)).filter(key => key.includes(created.session.id) && key.includes('{'));
+      // The locator is cut just after the tombstone is written, so it may outlive it by that moment, never by a second.
+      expect(await redis.observer.pttl(await locatorOf(namespace, created.session.id))).toBeLessThan((await redis.observer.pttl(record!)) + 1_000);
+    });
+
+    it('keeps reporting a rotated credential as consumed, and a revoked one as revoked, while the tombstone lasts', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const rotated = await sessions.create({ userId: 'integration-user' });
+      const revoked = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(rotated.token);
+      await sessions.revoke(revoked.token);
+
+      expect(await sessions.validate(rotated.token)).toEqual({ valid: false, reason: 'consumed' });
+      await expectPackageError(() => sessions.rotate(rotated.token), SessionReplayError, 'SESSION_REPLAY');
+      expect(await sessions.validate(revoked.token)).toEqual({ valid: false, reason: 'revoked' });
+    });
+
+    it('leaves at most one short-lived locator per rotation', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      let current = await sessions.create({ userId: 'integration-user' });
+      for (let rotation = 0; rotation < 10; rotation += 1) current = await sessions.rotate(current.token);
+
+      const spent = (await redis.keysUnder(namespace)).filter(key => !key.includes('{') && !key.includes(current.session.id));
+      expect(spent.length).toBeLessThanOrEqual(10);
+      for (const locator of spent) expect(await redis.observer.ttl(locator)).toBeLessThanOrEqual(TOMBSTONE_TTL);
+    });
+
+    it('reports a spent credential as not found, and leaves none of its keys, once the tombstone is gone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { ttl: 2 });
+      const rotated = await sessions.create({ userId: 'integration-user' });
+      const revoked = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(rotated.token);
+      await sessions.revoke(revoked.token);
+
+      // Every key here was written to live at most as long as the 2-second sessions.
+      await new Promise(resolve => setTimeout(resolve, 2_100));
+      expect(await sessions.validate(rotated.token)).toEqual({ valid: false, reason: 'not_found' });
+      expect(await sessions.validate(revoked.token)).toEqual({ valid: false, reason: 'not_found' });
+      const left = (await redis.keysUnder(namespace)).join('\n');
+      expect(left).not.toContain(rotated.session.id);
+      expect(left).not.toContain(revoked.session.id);
+    });
+  });
+
+  describe('cookies', () => {
+    const cookie = { name: 'sid', domain: 'example.com', sameSite: 'strict' } as const;
+
+    it('serializes the configured cookie, living as long as the session has left', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { ttl: 3_600, cookie });
+      const created = await sessions.create({ userId: 'integration-user' });
+      const before = Number((await redis.observer.time())[0]);
+      const header = await sessions.cookie(created.token, created.session);
+      const after = Number((await redis.observer.time())[0]);
+
+      const maxAge = Number(/; Max-Age=(\d+)/.exec(header)?.[1]);
+      expect(maxAge).toBeLessThanOrEqual(created.session.expiresAt - before);
+      expect(maxAge).toBeGreaterThanOrEqual(created.session.expiresAt - after);
+      expect(header).toBe(`sid=${encodeURIComponent(created.token)}; Max-Age=${maxAge}; Domain=example.com; Path=/; HttpOnly; Secure; SameSite=Strict`);
+    });
+  });
+
+  describe('security versions', () => {
+    /** The one key under a namespace holding a user's security version: a string that is not a session envelope. */
+    async function securityVersionKey(namespace: string): Promise<string> {
+      const keys: string[] = [];
+      for (const key of await redis.keysUnder(namespace)) {
+        if (key.includes('{') && (await redis.observer.type(key)) === 'string' && !(await redis.observer.get(key))!.startsWith('{')) keys.push(key);
+      }
+      expect(keys).toHaveLength(1);
+      return keys[0]!;
+    }
+
+    it('stores the version the first session of a user is created with', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { securityVersionEnabled: true });
+      const created = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      expect(await sessions.validate(created.token)).toEqual({ valid: true, session: created.session });
+    });
+
+    it('never lets create() overwrite a stored version', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      await sessions.setSecurityVersion('integration-user', 4);
+      const stale = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+
+      expect(await redis.observer.get(await securityVersionKey(namespace))).toBe('4');
+      expect(await sessions.validate(stale.token)).toEqual({ valid: false, reason: 'invalid' });
+    });
+
+    it('invalidates sessions created before a bump', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { securityVersionEnabled: true });
+      const before = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      await sessions.setSecurityVersion('integration-user', 4);
+      expect(await sessions.validate(before.token)).toEqual({ valid: false, reason: 'invalid' });
+    });
+
+    it('fails closed while the stored version is missing, until the next create() stores one', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      const existing = await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      await redis.observer.del(await securityVersionKey(namespace));
+
+      expect(await sessions.validate(existing.token)).toEqual({ valid: false, reason: 'invalid' });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      expect((await sessions.validate(existing.token)).valid).toBe(true);
+    });
+  });
+
+  describe('update()', () => {
+    it('accepts the version read before a touch, and keeps what the touch extended', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { touchInterval: 0, idleTimeout: 300 });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+      const read = await sessions.get(token);
+      // A touch in a later server second moves the idle expiry forward.
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      await sessions.touch(token);
+      const touched = await sessions.get(token);
+      expect(touched.idleExpiresAt).toBeGreaterThan(read.idleExpiresAt!);
+
+      const updated = await sessions.update(token, { metadata: { plan: 'pro' } }, read.version);
+      expect(updated).toMatchObject({ version: read.version + 1, idleExpiresAt: touched.idleExpiresAt, lastAccessedAt: touched.lastAccessedAt });
+      expect(await sessions.get(token)).toEqual(updated);
+    });
+
+    it('stores no field whose store flag is off, as create() does', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { storeIpAddress: false, storeUserAgent: false, storeDeviceId: false });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+
+      const updated = await sessions.update(token, { ipAddress: '1.2.3.4', userAgent: 'agent/1.0', deviceId: 'device-1' });
+      expect(updated).not.toHaveProperty('ipAddress');
+      const stored = await redis.storedUnder(namespace);
+      for (const value of ['1.2.3.4', 'agent/1.0', 'device-1']) expect(stored).not.toContain(value);
+    });
+
+    it('refuses a user agent longer than create() accepts', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { storeUserAgent: true });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+      await expectPackageError(() => sessions.update(token, { userAgent: 'a'.repeat(1025) }), SessionInvalidError, 'SESSION_INVALID');
+    });
+  });
+
+  it('lists only sessions that have not passed any of their expiries', async () => {
+    const namespace = redis.newNamespace();
+    const sessions = sessionsIn(namespace, { idleTimeout: 300 });
+    const live = await sessions.create({ userId: 'integration-user' });
+    const idle = await sessions.create({ userId: 'integration-user' });
+    // The record is the one key that names the session and carries the user's hash tag.
+    const [idleRecordKey] = (await redis.keysUnder(namespace)).filter(key => key.includes(idle.session.id) && key.includes('{'));
+    const lapsed = { ...idle.session, idleExpiresAt: idle.session.createdAt - 1 };
+    await redis.observer.set(idleRecordKey!, JSON.stringify({ v: 1, data: JSON.stringify(lapsed) }), 'KEEPTTL');
+
+    expect(await sessions.list('integration-user')).toEqual([live.session]);
+  });
+
+  describe('records that cannot be decoded', () => {
+    /** Keys by version, and managers for a deploy whose key manager briefly lacks the version older sessions were written under. */
+    function keyVersions() {
+      const keys = { v1: randomBytes(32), v2: randomBytes(32) };
+      return { before: keyManagerHolding({ v1: keys.v1 }, 'v1'), missingV1: keyManagerHolding({ v2: keys.v2 }, 'v2'), restored: keyManagerHolding(keys, 'v2') };
+    }
+
+    function encryptedSessionsIn(namespace: string, encryptionKeyManager: KeyManager): SessionManager {
+      return sessionsIn(namespace, { encryption: { enabled: true } }, encryptionKeyManager);
+    }
+
+    it('reports a record whose key version is missing, leaves it as stored, and validates it again once the key is back', async () => {
+      const namespace = redis.newNamespace();
+      const managers = keyVersions();
+      const created = await encryptedSessionsIn(namespace, managers.before).create({ userId: 'integration-user' });
+      const stored = await redis.storedUnder(namespace);
+
+      await expectPackageError(() => encryptedSessionsIn(namespace, managers.missingV1).validate(created.token), SessionSerializationError, 'SESSION_SERIALIZATION');
+      expect(await redis.storedUnder(namespace)).toBe(stored);
+      expect(await encryptedSessionsIn(namespace, managers.restored).validate(created.token)).toEqual({ valid: true, session: created.session });
+    });
+
+    it('lists the sessions it can read and keeps the others in the user\'s session set', async () => {
+      const namespace = redis.newNamespace();
+      const managers = keyVersions();
+      const unreadable = await encryptedSessionsIn(namespace, managers.before).create({ userId: 'integration-user' });
+      const sessions = encryptedSessionsIn(namespace, managers.missingV1);
+      const readable = await sessions.create({ userId: 'integration-user' });
+
+      expect(await sessions.list('integration-user')).toEqual([readable.session]);
+      expect(await redis.observer.zrange(await sessionSetKey(namespace), 0, -1)).toContain(unreadable.session.id);
+    });
   });
 
   describe('stored envelope', () => {

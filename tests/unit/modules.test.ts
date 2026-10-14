@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createRedisClient } from '../../src/index.js';
+import { RedisConfigurationError, createRedisClient } from '../../src/index.js';
+import type { RedisClientConfig } from '../../src/index.js';
+import { closedPort } from '../support/closed-port.js';
+import { expectPackageError } from '../support/errors.js';
 
 describe('module configuration', () => {
   it('normalizes all module defaults from one configuration object', () => {
@@ -36,5 +39,52 @@ describe('module enablement gating', () => {
   it('allows access once a module is explicitly enabled', () => {
     const client = createRedisClient({ mode: 'standalone', host: '127.0.0.1', port: 6379, lazyConnect: true, cache: { enabled: true } });
     expect(() => client.cache).not.toThrow();
+  });
+});
+
+describe('client configuration validation', () => {
+  it('rejects a mistyped mode instead of connecting as standalone', async () => {
+    const config = { mode: 'clustr', host: '127.0.0.1', port: await closedPort(), lazyConnect: true } as unknown as RedisClientConfig;
+    await expectPackageError(() => createRedisClient(config), RedisConfigurationError, 'REDIS_CONFIGURATION');
+  });
+
+  it('connects as standalone when mode is left undefined', async () => {
+    expect(() => createRedisClient({ mode: undefined, host: '127.0.0.1', port: 6379, lazyConnect: true })).not.toThrow();
+  });
+
+  it('accepts Cluster startup nodes in every form ioredis takes', async () => {
+    const port = await closedPort();
+    expect(() => createRedisClient({ mode: 'cluster', nodes: [`127.0.0.1:${port}`, port, { port }], lazyConnect: true })).not.toThrow();
+  });
+
+  describe('namespaces', () => {
+    type ModuleSections = Pick<RedisClientConfig, 'cache' | 'lock' | 'rateLimit' | 'pubsub' | 'streams' | 'sessions'>;
+    function clientWith(modules: ModuleSections) {
+      return createRedisClient({ mode: 'standalone', host: '127.0.0.1', port: 6379, lazyConnect: true, ...modules });
+    }
+
+    it('rejects two enabled modules on one namespace, naming both', async () => {
+      await expectPackageError(() => clientWith({ cache: { enabled: true, namespace: 'app' }, sessions: { enabled: true, namespace: 'app' } }), RedisConfigurationError, 'REDIS_CONFIGURATION');
+      expect(() => clientWith({ cache: { enabled: true, namespace: 'app' }, sessions: { enabled: true, namespace: 'app' } })).toThrow(/cache.*sessions|sessions.*cache/);
+    });
+
+    it('rejects a namespace that is a colon-delimited prefix of another', async () => {
+      await expectPackageError(() => clientWith({ sessions: { enabled: true, namespace: 'app' }, cache: { enabled: true, namespace: 'app:cache' } }), RedisConfigurationError, 'REDIS_CONFIGURATION');
+    });
+
+    it('accepts a namespace that only shares leading characters with another', () => {
+      expect(() => clientWith({ sessions: { enabled: true, namespace: 'app' }, cache: { enabled: true, namespace: 'application' } })).not.toThrow();
+    });
+
+    it('rejects a reconfiguration that would collide, and keeps the configuration in effect', async () => {
+      const client = clientWith({ sessions: { enabled: true, namespace: 'app' }, cache: { enabled: true, namespace: 'cache' } });
+      await expectPackageError(() => client.withCache({ namespace: 'app:cache' }), RedisConfigurationError, 'REDIS_CONFIGURATION');
+      expect(client.config.cache.namespace).toBe('cache');
+      expect(client.cache.key('a')).toBe('cache:a');
+    });
+
+    it('does not check the namespace of a disabled module', () => {
+      expect(() => clientWith({ sessions: { enabled: true, namespace: 'app' }, cache: { enabled: false, namespace: 'app' } })).not.toThrow();
+    });
   });
 });

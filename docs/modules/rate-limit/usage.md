@@ -38,12 +38,14 @@ const redis = createRedisClient({
 Returns the counter key for the fixed window containing `serverSeconds`. Pass Redis server time to get the key the limiter itself uses.
 
 ```ts
-redis.rateLimiter.key('user:42', 120); // rate-limit:user:42:2 for a 60s window
+redis.rateLimiter.key('user:42', 120); // rate-limit:{user:42}:2 for a 60s window
 ```
+
+The subject is the key's Redis Cluster hash tag, so every window of one subject lands in one hash slot. That is what lets a single script read the server clock and pick the window itself. A subject must not be empty or start with `}`, because either would leave the hash tag empty; such a subject throws `RATE_LIMIT_INPUT`.
 
 ### `consume(subject, cost?)`
 
-Atomically increments the current window and creates its TTL on the first increment.
+Atomically adds `cost` to the current window, in one round trip. Whatever the cost, a window's counter expires when the window ends.
 
 ```ts
 const decision = await redis.rateLimiter.consume('user:42');
@@ -84,17 +86,21 @@ await redis.rateLimiter.reset('user:42');
 - `allowed`: whether the operation fits within the limit.
 - `limit`: configured maximum.
 - `remaining`: remaining units, never below zero.
-- `resetAt`: estimated Unix timestamp, in Redis server time, when the current window expires.
-- `retryAfterSeconds`: TTL to wait when denied, otherwise `0`.
+- `resetAt`: Unix timestamp, in Redis server time, at which the current window ends: `(window + 1) × windowSeconds`.
+- `retryAfterSeconds`: when denied, seconds from now until the window ends; otherwise `0`.
+
+`check()` and `consume()` report the same `resetAt` for the same subject and window.
 - `count`: current consumed units.
 
 ## Clock
 
-Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. Each `consume`, `check` and `reset` therefore reads the server clock before acting, which costs one extra round trip, and none of them accepts a caller-supplied time. On Redis Cluster the clock is that of whichever node answers, so the nodes' own clocks must be kept in sync. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
+Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. `consume` and `check` read the server clock inside the script that does the work, so each is one round trip; `reset` reads it first and then deletes, which is two. None of them accepts a caller-supplied time. On Redis Cluster the clock is that of the node holding the subject's hash slot, so the nodes' own clocks must be kept in sync. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
 
 ## Fixed-window behavior
 
-A fixed window can allow bursts at a boundary. For example, a request near the end of one window and another immediately after the boundary count against different windows. If smoother traffic shaping is required, use a different algorithm rather than assuming this module is a sliding-window limiter.
+A fixed window can allow bursts at a boundary. Requests just before a window ends and just after it count against different windows, so for a brief time around a boundary a subject can reach up to twice `maxRequests`. If smoother traffic shaping is required, use a different algorithm rather than assuming this module is a sliding-window limiter.
+
+Denied requests still count against the window: `consume()` adds its cost whether or not the result is `allowed`. A client that keeps retrying while denied keeps the count above the limit, but can never extend the window, which ends on schedule.
 
 ## Errors
 
@@ -103,7 +109,7 @@ Every error this module raises itself is a `RateLimitError`, which extends the p
 | Code | Thrown when |
 |---|---|
 | `RATE_LIMIT_CONFIGURATION` | the rate-limit configuration is invalid |
-| `RATE_LIMIT_INPUT` | `consume()` is given a cost that is not a positive integer |
+| `RATE_LIMIT_INPUT` | `consume()` is given a cost that is not a positive integer, or a method is given a subject that is empty or starts with `}` |
 
 A denied request is not an error: `consume()` returns `allowed: false`.
 

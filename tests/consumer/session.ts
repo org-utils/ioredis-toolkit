@@ -25,6 +25,14 @@ export async function signIn(userId: string): Promise<string> {
 
 export function signOut(): string { return serializeDeletionCookie(cookie); }
 
+/** The manager serializes the cookie its own configuration describes. */
+export async function signInWithConfiguredCookie(userId: string): Promise<string> {
+  const created: CreatedSession = await sessions.create({ userId });
+  return sessions.cookie(created.token, created.session);
+}
+
+export function signOutWithConfiguredCookie(): string { return sessions.deletionCookie(); }
+
 export async function refresh(token: string): Promise<string> {
   const rotated: RotationResult = await sessions.rotate(token);
   return rotated.token;

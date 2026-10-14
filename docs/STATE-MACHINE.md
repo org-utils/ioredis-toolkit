@@ -16,8 +16,8 @@ DELETED (physical cleanup)
 ### Rules
 
 - `ACTIVE` is the only state that can authenticate.
-- `CONSUMED` cannot authenticate and is retained only for bounded replay detection.
-- `REVOKED` cannot authenticate.
+- `CONSUMED` cannot authenticate and is retained only for bounded replay detection: a tombstone of at most 300 seconds, whose token locator is cut to expire with it.
+- `REVOKED` cannot authenticate, and is retained as a tombstone the same way.
 - Redis TTL may physically delete any state after its security usefulness ends.
 - `destroy` is physical deletion and idempotent.
 - `revoke` is logical denial and idempotent.
@@ -30,8 +30,8 @@ DELETED (physical cleanup)
 |---|---|---|---|---|
 | create | none | active | session + user index same-slot Lua; on eviction, also same-slot `DEL` of the evicted session/token-index keys; token locator is a separate, cross-slot secondary write | not idempotent |
 | validate | active candidate | read-only decision | no transaction needed | safe read retry by application |
-| touch | active | active | same-key compare-and-set | monotonic/idempotent effect |
-| update | active | active | same-key compare-and-set + version | safe only with version semantics |
+| touch | active | active | same-key compare-and-set; leaves `version` unchanged | monotonic/idempotent effect |
+| update | active | active | same-key compare-and-set + version; a stale `expectedVersion` throws `SessionConflictError` | safe only with version semantics |
 | rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
 | revoke | active/revoked | revoked/deleted | an unconditional same-key write marks the record; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted) | idempotent |
 | destroy | any | deleted | individual writes | idempotent |

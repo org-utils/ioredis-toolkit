@@ -23,7 +23,7 @@ export interface SessionRecord {
   absoluteExpiresAt: number | null;
   /** Current lifecycle state. Only `active` sessions can authenticate. */
   status: SessionStatus;
-  /** Monotonically increasing optimistic-concurrency version. */
+  /** Optimistic-concurrency version. It counts the changes an application can see, `update()` and status changes, and a touch leaves it unchanged. */
   version: number;
   /** User security version captured at creation, or `null` when disabled. */
   securityVersion: number | null;

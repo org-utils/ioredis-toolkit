@@ -17,6 +17,8 @@ Every module can be configured in the same `createRedisClient()` call. Module co
 
 Each module defaults to `enabled: false`. Accessing a module's getter on the client (`redis.cache`, `redis.lock`, `redis.rateLimiter`, `redis.pubsub`, `redis.streams`, `redis.sessions`) throws while it is disabled — set `enabled: true` in that module's configuration to use it.
 
+`createRedisClient()` validates the whole configuration before it connects, and throws `RedisConfigurationError` on a mistake: an unknown `mode`, for example, or two enabled modules whose namespaces collide. Namespaces collide when they are equal or when one is a colon-delimited prefix of the other: `app` and `app:cache` collide, `app` and `application` do not. Without that rule one module could read, overwrite or clear another's keys, as `cache.clear()` on a namespace shared with sessions would. A disabled module's namespace is not checked. Each `with*()` call applies the same check. A call that would cause a collision throws and leaves the configuration in effect unchanged.
+
 ```ts
 import { createRedisClient } from 'ioredis-toolkit';
 

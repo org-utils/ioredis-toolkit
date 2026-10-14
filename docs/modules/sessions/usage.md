@@ -52,7 +52,7 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `absoluteTimeout` | `number` | unset | Optional hard application lifetime. |
 | `touchInterval` | `number` | 60 | Minimum interval between rolling touch writes. |
 | `rolling` | `boolean` | `true` | Enables rolling idle expiration behavior. |
-| `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. |
+| `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. The first `create()` for a user stores its version; see [`setSecurityVersion`](#setsecurityversionuserid-version). |
 | `maxSessionsPerUser` | `number` | 20 | Maximum configured indexed sessions per user. |
 | `maxMetadataBytes` | `number` | 8192 | Maximum metadata JSON size. |
 | `maxBatchSize` | `number` | 200 | Maximum bounded administrative batch. |
@@ -61,8 +61,8 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `storeUserAgent` | `boolean` | false | Persists user-agent metadata when enabled. |
 | `storeDeviceId` | `boolean` | false | Persists device ID metadata when enabled. |
 | `encryption.enabled` | `boolean` | false | Enables authenticated encryption for serialized session values when a key manager is supplied. |
-| `circuitBreaker` | object | see below | Reserved configuration, fully defaulted and validated like every other nested section. Not yet consulted by any repository/service code path — there is no circuit-breaker behavior wired up in this release. |
-| `cookie` | object | secure defaults | Cookie serialization settings. |
+| `circuitBreaker` | object | see below | **Deprecated, and has no effect.** The package has no circuit breaker. The section is still accepted and validated so that existing configuration keeps parsing, and will be removed in the next major version. |
+| `cookie` | object | secure defaults | The cookie `sessions.cookie()` and `sessions.deletionCookie()` serialize: `name`, `httpOnly`, `secure`, `sameSite`, `domain`, `path` and an optional `maxAge`. See [Cookie helpers](#cookie-helpers). |
 
 `circuitBreaker` defaults to `{ enabled: false, failureThreshold: 5, resetTimeoutMs: 10_000, halfOpenMaxRequests: 1 }` and, like `encryption` and `cookie`, may be omitted entirely.
 
@@ -122,6 +122,8 @@ await sessions.touch(token);
 
 It is usually appropriate to call this on authenticated requests without writing every request to Redis.
 
+A touch does not change the session's `version`, so a background touch never invalidates a version an `update()` is about to rely on.
+
 ## `update(token, patch, expectedVersion?)`
 
 Updates mutable metadata with optional optimistic concurrency.
@@ -133,7 +135,9 @@ const updated = await sessions.update(token, {
 }, current.version);
 ```
 
-If another writer changed the record first, the expected-version check prevents an unintended lost update.
+`version` counts the changes an application can see: each `update()` and each status change (rotation, revocation) increments it, and `touch()` does not. If another `update()` changed the record after `expectedVersion` was read, the call throws `SessionConflictError` (code `SESSION_CONFLICT`) instead of overwriting it. Without `expectedVersion`, the patch is applied to whatever is stored. Either way, the patch is applied to the record as stored when it is written, so a touch that landed in between is kept.
+
+`update()` follows the same rules as `create()` for client details. `ipAddress`, `userAgent` and `deviceId` are stored only when `storeIpAddress`, `storeUserAgent` and `storeDeviceId` are on, and are otherwise ignored. They are capped at 128, 1024 and 256 characters respectively, and a longer value throws `SessionInvalidError`. Passing `null` clears a stored value.
 
 ## `rotate(token)`
 
@@ -156,6 +160,8 @@ await sessions.revoke(token);
 
 Revocation is idempotent from the application's perspective. `revoke()` (and rotation's internal predecessor `consume()`) remove the session from the user's index immediately rather than only relying on `list()`'s lazy self-heal, so a revoked/rotated session stops counting toward `maxSessionsPerUser` right away instead of only once its tombstone expires.
 
+A revoked or rotated session's record is kept as a tombstone for the rest of its lifetime, capped at 300 seconds. Its token locator, the key that maps the credential to its user, is cut to expire with the tombstone. While the tombstone lasts, a rotated credential presented again validates as `consumed` (and `rotate()` throws `SessionReplayError`), and a revoked one as `revoked`. Once the tombstone has expired, both validate as `not_found` and none of their keys remain, however often a session is rotated.
+
 ## `destroy(token)`
 
 Permanently removes the session record and derived indexes.
@@ -176,6 +182,8 @@ await sessions.setSecurityVersion('user_123', 8);
 
 A common password-reset/logout-all pattern is to increment the user's security version and then let old sessions fail validation.
 
+With `securityVersionEnabled`, `create()` requires `securityVersion`, and a session validates only while its version equals the one stored for its user. Turning the feature on needs no backfill. When no version is stored for a user, `create()` stores the one it is given, set only if absent, together with the session. `create()` never overwrites a stored version, so only `setSecurityVersion()` moves it, and a session created with an older version than the stored one validates as `invalid` from the start. If the stored version is missing (never written, or evicted under memory pressure), validation fails closed: every session of that user validates as `invalid` until the next `create()` or `setSecurityVersion()` stores one.
+
 ## `revokeAll(userId, limit?)`
 
 Revokes a bounded batch and returns `{ affected, remaining }` so large user indexes do not require loading every session into memory.
@@ -191,7 +199,9 @@ Use bounded loops or background jobs for users with unusually large session coun
 
 ## `list(userId, offset?, limit?)`
 
-Returns a bounded page of authoritative sessions for an application user.
+Returns a bounded page of an application user's sessions. A session past any of its expiries (hard, idle or absolute), measured in Redis server time, is left out, so the page lists only sessions that can still authenticate. A page can therefore hold fewer than `limit` sessions while more remain.
+
+A member of the user's session set whose record is gone is removed from the set. A record that cannot be decoded, for example because the key manager lacks the key version it was encrypted under, is left out of the page but stays in the set and in Redis.
 
 ```ts
 const sessionsForUser = await sessions.list('user_123', 0, 50);
@@ -201,7 +211,19 @@ This is an administrative/management operation, not an authentication primitive.
 
 ## Cookie helpers
 
-The package also exposes cookie serializers:
+The session manager serializes the cookie its `cookie` configuration describes:
+
+```ts
+const { token, session } = await sessions.create({ userId: 'user_123' });
+response.setHeader('Set-Cookie', await sessions.cookie(token, session));
+
+// On sign-out:
+response.setHeader('Set-Cookie', sessions.deletionCookie());
+```
+
+`cookie(token, session)` carries the configured name, domain, path, `HttpOnly`, `Secure` and `SameSite` attributes. Its `Max-Age` is `cookie.maxAge` when that is configured. Otherwise it is what the session has left before its hard expiry, measured in Redis server time, which is why the method is async. `deletionCookie()` returns an expired cookie with the configured name, path and domain, so the browser drops the session cookie.
+
+The package also exposes the cookie serializers themselves:
 
 ```ts
 import { serializeCookie, serializeDeletionCookie } from 'ioredis-toolkit';
@@ -217,6 +239,8 @@ const header = serializeCookie(token, {
 
 const clear = serializeDeletionCookie({ name: 'session', path: '/' });
 ```
+
+`serializeCookie()` rejects a `Domain` or `Path` that contains `;`, a control character or whitespace, any of which would end the attribute early or split the header, by throwing `SessionInputError`.
 
 Cookie authentication requires a CSRF strategy appropriate to the application. `HttpOnly` protects against direct JavaScript reads but does not itself prevent CSRF.
 
@@ -241,9 +265,9 @@ All typed errors extend `SessionError`, which extends the package-wide `RedisToo
 | `SessionLimitError` | `SESSION_LIMIT` | `list()` when `limit` exceeds `maxBatchSize` |
 | `SessionInvalidError` | `SESSION_INVALID` | malformed input, or a session that fails an index/security-version check |
 | `SessionStorageError` | `SESSION_STORAGE` | Redis-level read/write failures |
-| `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read |
+| `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read. `validate()` throws it too. The record is never deleted, so restoring the key manager or encryption setting makes the session usable again |
 | `SessionConfigurationError` | `SESSION_CONFIGURATION` | invalid session configuration, or constructing the manager while `enabled: false` |
-| `SessionInputError` | `SESSION_INPUT` | `serializeCookie()`/`serializeDeletionCookie()` given an invalid cookie name, or `SameSite=None` without `Secure` |
+| `SessionInputError` | `SESSION_INPUT` | `serializeCookie()`/`serializeDeletionCookie()` (and so `cookie()`/`deletionCookie()`) given an invalid cookie name, a `Domain` or `Path` containing `;`, a control character or whitespace, or `SameSite=None` without `Secure` |
 
 `validate()` never throws for ordinary invalid-credential conditions — see the discriminated result above. These errors surface from `get()` and the other exception-based methods.
 

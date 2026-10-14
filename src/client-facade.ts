@@ -1,4 +1,4 @@
-import { RedisClientWrapper, RedisConfigurationError, containedReporter, createRedisConnection, reportConnectionErrors, type ErrorReporter, type RedisConfig } from './redis/index.js';
+import { RedisClientWrapper, RedisConfigurationError, containedReporter, createRedisConnection, parseRedisConnectionConfig, reportConnectionErrors, type ErrorReporter, type RedisConfig } from './redis/index.js';
 import { RedisCache, parseCacheConfig, type CacheConfig } from './cache/index.js';
 import { RedisLock, parseLockConfig, type LockConfig } from './lock/index.js';
 import { RedisRateLimiter, parseRateLimitConfig, type RateLimitConfig } from './rate-limit/index.js';
@@ -36,6 +36,35 @@ export interface RedisClientDependencies {
   onError?: (error: unknown, context: RedisErrorContext) => void;
 }
 
+type ModuleConfigs = { cache: CacheConfig; lock: LockConfig; rateLimit: RateLimitConfig; pubsub: PubSubConfig; streams: StreamsConfig; sessions: SessionConfig };
+
+/** Whether two namespaces overlap: they are equal, or one is a colon-delimited prefix of the other (`app` and `app:cache`). */
+function namespacesOverlap(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}:`) || b.startsWith(`${a}:`);
+}
+
+/**
+ * Throws when two enabled modules would write under overlapping namespaces, so that one module can never read,
+ * overwrite or clear another's keys. A disabled module writes nothing, so its namespace is not checked.
+ */
+function assertNamespacesDisjoint(configs: ModuleConfigs): void {
+  const enabled = Object.entries(configs).filter(([, config]) => config.enabled);
+  for (const [index, [module, { namespace }]] of enabled.entries()) {
+    for (const [other, { namespace: otherNamespace }] of enabled.slice(index + 1)) {
+      if (namespacesOverlap(namespace, otherNamespace)) throw new RedisConfigurationError(`Modules ${module} and ${other} have overlapping namespaces "${namespace}" and "${otherNamespace}"`);
+    }
+  }
+}
+
+/** Parses every module section of a client configuration, and rejects namespaces that collide. */
+function parseModuleConfigs(config: RedisClientConfig): ModuleConfigs {
+  const configs = {
+    cache: parseCacheConfig(config.cache), lock: parseLockConfig(config.lock), rateLimit: parseRateLimitConfig(config.rateLimit), pubsub: parsePubSubConfig(config.pubsub), streams: parseStreamsConfig(config.streams), sessions: parseSessionConfig(config.sessions),
+  };
+  assertNamespacesDisjoint(configs);
+  return configs;
+}
+
 /** Shared Redis client facade exposing all package modules through one connection/configuration boundary. */
 export class RedisClient extends RedisClientWrapper {
   private cacheModule?: RedisCache;
@@ -44,7 +73,7 @@ export class RedisClient extends RedisClientWrapper {
   private pubsubModule: RedisPubSub | undefined;
   private streamsModule?: RedisStreams;
   private sessionModule: SessionManager | undefined;
-  private readonly moduleConfig: { cache: CacheConfig; lock: LockConfig; rateLimit: RateLimitConfig; pubsub: PubSubConfig; streams: StreamsConfig; sessions: SessionConfig };
+  private readonly moduleConfig: ModuleConfigs;
   private readonly dependencies: RedisClientDependencies;
   private readonly report: ErrorReporter<RedisErrorSource>;
   private retiredPubSub: Promise<void> = Promise.resolve();
@@ -55,9 +84,7 @@ export class RedisClient extends RedisClientWrapper {
     this.dependencies = dependencies;
     this.report = containedReporter(dependencies.onError);
     reportConnectionErrors(connection, this.report, 'connection');
-    this.moduleConfig = {
-      cache: parseCacheConfig(config.cache), lock: parseLockConfig(config.lock), rateLimit: parseRateLimitConfig(config.rateLimit), pubsub: parsePubSubConfig(config.pubsub), streams: parseStreamsConfig(config.streams), sessions: parseSessionConfig(config.sessions),
-    };
+    this.moduleConfig = parseModuleConfigs(config);
   }
 
   /** Returns the configured cache module, creating it lazily. Throws if the module is disabled. */
@@ -94,20 +121,26 @@ export class RedisClient extends RedisClientWrapper {
     return this.sessionModule;
   }
 
+  /** Puts one module's new configuration in effect, unless it would collide with another module's namespace, in which case the configuration in effect is kept. */
+  private reconfigure<Module extends keyof ModuleConfigs>(module: Module, next: ModuleConfigs[Module]): void {
+    assertNamespacesDisjoint({ ...this.moduleConfig, [module]: next });
+    this.moduleConfig[module] = next;
+  }
+
   /** Merges or replaces the global cache configuration and returns this client for fluent chaining. */
-  withCache(options: Partial<CacheConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.moduleConfig.cache = parseCacheConfig(mode === 'merge' ? { ...this.moduleConfig.cache, ...options } : options); this.cacheModule = new RedisCache(this, this.moduleConfig.cache); return this; }
+  withCache(options: Partial<CacheConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('cache', parseCacheConfig(mode === 'merge' ? { ...this.moduleConfig.cache, ...options } : options)); this.cacheModule = new RedisCache(this, this.moduleConfig.cache); return this; }
   /** Merges or replaces the global lock configuration and returns this client for fluent chaining. */
-  withLock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.moduleConfig.lock = parseLockConfig(mode === 'merge' ? { ...this.moduleConfig.lock, ...options } : options); this.lockModule = new RedisLock(this, this.moduleConfig.lock); return this; }
+  withLock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('lock', parseLockConfig(mode === 'merge' ? { ...this.moduleConfig.lock, ...options } : options)); this.lockModule = new RedisLock(this, this.moduleConfig.lock); return this; }
   /** Alias for withLock for codebases that prefer lowercase module naming. */
   withlock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { return this.withLock(options, mode); }
   /** Merges or replaces the global rate-limit configuration and returns this client for fluent chaining. */
-  withRateLimit(options: Partial<RateLimitConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.moduleConfig.rateLimit = parseRateLimitConfig(mode === 'merge' ? { ...this.moduleConfig.rateLimit, ...options } : options); this.rateLimitModule = new RedisRateLimiter(this, this.moduleConfig.rateLimit); return this; }
+  withRateLimit(options: Partial<RateLimitConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('rateLimit', parseRateLimitConfig(mode === 'merge' ? { ...this.moduleConfig.rateLimit, ...options } : options)); this.rateLimitModule = new RedisRateLimiter(this, this.moduleConfig.rateLimit); return this; }
   /** Merges or replaces the global Pub/Sub configuration and returns this client for fluent chaining. */
-  withPubSub(options: Partial<PubSubConfig> = {}, mode: ModuleConfigMode = 'merge'): this { const retiring = this.pubsubModule?.close().catch(() => undefined); this.retiredPubSub = Promise.all([this.retiredPubSub, retiring]).then(() => undefined); this.pubsubModule = undefined; this.moduleConfig.pubsub = parsePubSubConfig(mode === 'merge' ? { ...this.moduleConfig.pubsub, ...options } : options); this.pubsubModule = new RedisPubSub(this, this.moduleConfig.pubsub, this.report); return this; }
+  withPubSub(options: Partial<PubSubConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('pubsub', parsePubSubConfig(mode === 'merge' ? { ...this.moduleConfig.pubsub, ...options } : options)); const retiring = this.pubsubModule?.close().catch(() => undefined); this.retiredPubSub = Promise.all([this.retiredPubSub, retiring]).then(() => undefined); this.pubsubModule = new RedisPubSub(this, this.moduleConfig.pubsub, this.report); return this; }
   /** Merges or replaces the global Streams configuration and returns this client for fluent chaining. */
-  withStreams(options: Partial<StreamsConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.moduleConfig.streams = parseStreamsConfig(mode === 'merge' ? { ...this.moduleConfig.streams, ...options } : options); this.streamsModule = new RedisStreams(this, this.moduleConfig.streams); return this; }
+  withStreams(options: Partial<StreamsConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('streams', parseStreamsConfig(mode === 'merge' ? { ...this.moduleConfig.streams, ...options } : options)); this.streamsModule = new RedisStreams(this, this.moduleConfig.streams); return this; }
   /** Merges or replaces the global session configuration and returns this client for fluent chaining. */
-  withSessions(options: Partial<SessionConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.moduleConfig.sessions = parseSessionConfig(mode === 'merge' ? { ...this.moduleConfig.sessions, ...options } : options); this.sessionModule = undefined; return this; }
+  withSessions(options: Partial<SessionConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('sessions', parseSessionConfig(mode === 'merge' ? { ...this.moduleConfig.sessions, ...options } : options)); this.sessionModule = undefined; return this; }
   /** Alias for withSession for singular naming. */
   withSession(options: Partial<SessionConfig> = {}, mode: ModuleConfigMode = 'merge'): this { return this.withSessions(options, mode); }
 
@@ -118,9 +151,15 @@ export class RedisClient extends RedisClientWrapper {
   get config(): Readonly<typeof this.moduleConfig> { return this.moduleConfig; }
 }
 
-/** Creates a single shared Redis client with all optional modules configured from one object. */
+/**
+ * Creates a single shared Redis client with all optional modules configured from one object.
+ * Every section is validated before anything connects: a mistyped `mode`, or two enabled modules whose namespaces
+ * collide, throws {@link RedisConfigurationError} and leaves no connection behind.
+ */
 export function createRedisClient(config: RedisClientConfig, dependencies: RedisClientDependencies = {}): RedisClient {
   const { cache: _cache, lock: _lock, rateLimit: _rateLimit, pubsub: _pubsub, streams: _streams, sessions: _sessions, ...redisConfig } = config;
   void _cache; void _lock; void _rateLimit; void _pubsub; void _streams; void _sessions;
+  parseRedisConnectionConfig(redisConfig);
+  parseModuleConfigs(config);
   return new RedisClient(createRedisConnection(redisConfig), config, dependencies);
 }

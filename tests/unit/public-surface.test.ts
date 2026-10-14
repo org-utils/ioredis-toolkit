@@ -57,6 +57,17 @@ const rootOnly: Surface = {
   ],
 };
 
+/**
+ * The methods of the classes a consumer holds, written out by hand like the names above: a method added to one fails this
+ * suite until it is listed here too. A method a consumer cannot reach (private or protected) is not part of the surface.
+ */
+const classSurfaces: Record<string, { specifier: string; methods: string[] }> = {
+  SessionManager: {
+    specifier: 'ioredis-toolkit/session',
+    methods: ['create', 'validate', 'get', 'touch', 'update', 'rotate', 'destroy', 'revoke', 'setSecurityVersion', 'revokeAll', 'list', 'cookie', 'deletionCookie'],
+  },
+};
+
 /** The surface written for a specifier: the root's is what only it exports, together with every subpath's. */
 function surfaceOf(specifier: string): Surface | undefined {
   if (specifier !== manifest.name) return subpathSurfaces[specifier];
@@ -84,6 +95,14 @@ describe('public surface', () => {
 
   it.each(specifiers)('%s exports exactly the values of its public surface', async specifier => {
     expect(sorted(await runtimeNames(specifier))).toEqual(sorted(surfaceOf(specifier)?.values ?? []));
+  });
+
+  it.each(Object.entries(classSurfaces))('%s offers exactly the methods of its public surface', (className, { specifier, methods }) => {
+    const checker = program.getTypeChecker();
+    const declared = exportsOf(program, sourceOf(specifier)).get(className)!;
+    const reachable = checker.getDeclaredTypeOfSymbol(declared).getProperties()
+      .filter(member => !member.declarations?.some(declaration => ts.getCombinedModifierFlags(declaration) & (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)));
+    expect(sorted(reachable.map(member => member.name))).toEqual(sorted(methods));
   });
 
   it.each(specifiers)('%s exports exactly the types of its public surface', async specifier => {

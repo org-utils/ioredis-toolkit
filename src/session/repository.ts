@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { RedisClientWrapper } from '../redis/index.js';
-import { SessionReplayError, SessionRotationError, SessionStorageError } from './errors.js';
+import { SessionConflictError, SessionReplayError, SessionRotationError, SessionStorageError } from './errors.js';
 import type { SessionConfig } from './config.js';
 import type { SessionKeyStrategy } from './keys.js';
 import type { SessionRecord } from './types.js';
@@ -24,7 +24,10 @@ export class SessionRepository {
   /** Creates the repository using shared Redis infrastructure and versioned serializers/scripts. */
   constructor(private readonly o: SessionRepositoryOptions) {}
 
-  /** Persists a session and its derived indexes using the repository's authoritative write semantics. */
+  /**
+   * Persists a session and its derived indexes using the repository's authoritative write semantics. With security versions
+   * enabled, a user with none stored yet gets the session's version, set if absent in the same step.
+   */
   async create(record: SessionRecord): Promise<void> {
     const ttl = Math.max(1, Math.ceil(record.expiresAt - record.createdAt));
     // create_session appends the token hash of each session it evicts to these two keys.
@@ -32,8 +35,10 @@ export class SessionRepository {
     const evictedTokenIndexKey = this.o.keys.tokenIndex('');
     const result = await this.o.scripts.eval(
       'create_session',
-      [this.o.keys.session(record.userId, record.id), this.o.keys.userIndex(record.userId)],
-      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser), evictedSessionKey, evictedTokenIndexKey]
+      [this.o.keys.session(record.userId, record.id), this.o.keys.userIndex(record.userId), this.o.keys.securityVersion(record.userId)],
+      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser), evictedSessionKey, evictedTokenIndexKey,
+        // A user with no stored security version takes the one their session is created with; a stored one is never overwritten.
+        this.o.config.securityVersionEnabled && record.securityVersion !== null ? String(record.securityVersion) : '']
     );
     const code = Number((result as unknown[])[0]);
     if (code !== 1) throw new SessionStorageError('Session creation failed');
@@ -47,7 +52,11 @@ export class SessionRepository {
     }
   }
 
-  /** Resolves a token hash through the secondary locator and then reads the authoritative session record. */
+  /**
+   * Resolves a token hash through the secondary locator and then reads the authoritative session record. A record that
+   * cannot be decoded throws `SessionSerializationError` and is left as stored: a key manager briefly missing a key
+   * version, or encryption switched off by mistake, must be recoverable by putting the configuration back.
+   */
   async resolve(tokenHash: string): Promise<SessionRecord | null> {
     let userTag: string | null;
     try { userTag = await this.o.redis.get(this.o.keys.tokenIndex(tokenHash)); }
@@ -57,8 +66,7 @@ export class SessionRepository {
     try { raw = await this.o.redis.get(this.o.keys.sessionByTag(userTag, tokenHash)); }
     catch (error) { throw new SessionStorageError('Session record unavailable', error); }
     if (!raw) { await this.safeDel(this.o.keys.tokenIndex(tokenHash)); return null; }
-    try { return this.o.serializer.deserialize(raw); }
-    catch (error) { await this.safeDel(this.o.keys.sessionByTag(userTag, tokenHash)); throw error; }
+    return this.o.serializer.deserialize(raw);
   }
 
   /** Persists the current security version for a user. */
@@ -88,7 +96,8 @@ export class SessionRepository {
       if (attempt > 0 && stored.lastAccessedAt >= now) return { result: 'skipped' };
       const idleDuration = stored.idleTimeoutSeconds ?? this.o.config.idleTimeout ?? this.o.config.ttl;
       const idleExpiresAt = stored.idleExpiresAt === null ? null : Math.min(stored.absoluteExpiresAt ?? Number.MAX_SAFE_INTEGER, now + idleDuration);
-      return { result: 'updated', replacement: { ...stored, lastAccessedAt: now, idleExpiresAt, version: stored.version + 1 }, ttl: stored.expiresAt - now };
+      // A touch changes nothing the application can see, so it leaves the version alone.
+      return { result: 'updated', replacement: { ...stored, lastAccessedAt: now, idleExpiresAt }, ttl: stored.expiresAt - now };
     });
   }
 
@@ -101,17 +110,20 @@ export class SessionRepository {
     });
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
+    await this.expireLocator(record.id, Math.max(1, tombstoneTtl));
   }
 
-  /** Applies a version-checked replacement to an authoritative session record. */
-  async update(record: SessionRecord, replacement: SessionRecord, expectedVersion: number, now: number): Promise<void> {
-    await this.change(record, stored => {
-      if (!isRecord(stored) || stored.status !== 'active') throw new SessionStorageError('Session update failed');
-      if (stored.version !== expectedVersion) throw new SessionStorageError('Session version conflict');
-      const sameSession = replacement.userId === stored.userId && replacement.jti === stored.jti && replacement.id === stored.id
-        && replacement.createdAt === stored.createdAt && replacement.absoluteExpiresAt === stored.absoluteExpiresAt;
-      if (!sameSession || stored.expiresAt <= now) throw new SessionStorageError('Session update failed');
-      return { result: undefined, replacement, ttl: stored.expiresAt - now };
+  /**
+   * Applies `patch` to the record as stored and returns what was written. The patch is applied to the stored record, not to
+   * the one the caller read, so a touch that landed in between is kept. With an `expectedVersion`, a record at any other
+   * version is refused with {@link SessionConflictError}.
+   */
+  async update(record: SessionRecord, patch: (stored: SessionRecord) => SessionRecord, expectedVersion: number | undefined, now: number): Promise<SessionRecord> {
+    return this.change(record, stored => {
+      if (!isRecord(stored) || stored.status !== 'active' || stored.expiresAt <= now) throw new SessionStorageError('Session update failed');
+      if (expectedVersion !== undefined && stored.version !== expectedVersion) throw new SessionConflictError();
+      const replacement = patch(stored);
+      return { result: replacement, replacement, ttl: stored.expiresAt - now };
     });
   }
 
@@ -123,7 +135,9 @@ export class SessionRepository {
     const key = this.o.keys.session(record.userId, record.id);
     const { stored } = await this.load(key);
     if (stored === 'unreadable') throw new SessionStorageError('Session revocation failed');
-    if (stored !== 'missing' && stored.status !== 'revoked') {
+    // Only the call that writes the tombstone cuts the locator; a later one would let it outlive the tombstone.
+    const revokesNow = stored !== 'missing' && stored.status !== 'revoked';
+    if (revokesNow) {
       const revoked = this.o.serializer.serialize({ ...stored, status: 'revoked', version: stored.version + 1 });
       try {
         if (tombstoneTtl < 1) await this.o.redis.del(key);
@@ -132,6 +146,7 @@ export class SessionRepository {
     }
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
+    if (revokesNow) await this.expireLocator(record.id, tombstoneTtl);
   }
 
   /** Removes the authoritative record and derived index entries. */
@@ -143,8 +158,12 @@ export class SessionRepository {
     } catch (error) { throw new SessionStorageError('Session deletion failed', error); }
   }
 
-  /** Loads a bounded page of sessions and cleans stale derived-index members. */
-  async list(userId: string, offset: number, limit: number): Promise<SessionRecord[]> {
+  /**
+   * Loads a bounded page of sessions and removes members whose record is gone from the user's session set. A record past
+   * any of its expiries at `now` is left out of the page. So is a record that cannot be decoded, which is kept in the set,
+   * so a misconfigured key manager drops no session.
+   */
+  async list(userId: string, offset: number, limit: number, now: number): Promise<SessionRecord[]> {
     const members = await this.o.redis.zrange(this.o.keys.userIndex(userId), offset, offset + limit - 1);
     if (!members.length) return [];
     const keys = members.map(tokenHash => this.o.keys.sessionByTag(this.o.keys.userTag(userId), tokenHash));
@@ -153,7 +172,9 @@ export class SessionRepository {
     const stale: string[] = [];
     raw.forEach((value, i) => {
       if (!value) { stale.push(members[i]!); return; }
-      try { records.push(this.o.serializer.deserialize(value)); } catch { stale.push(members[i]!); }
+      let record: SessionRecord;
+      try { record = this.o.serializer.deserialize(value); } catch { return; /* reported by resolve(), never deleted */ }
+      if (!hasExpired(record, now)) records.push(record);
     });
     if (stale.length) await this.o.redis.zrem(this.o.keys.userIndex(userId), ...stale);
     return records;
@@ -203,6 +224,19 @@ export class SessionRepository {
     if (raw === null) return { raw, stored: 'missing' };
     try { return { raw, stored: this.o.serializer.deserialize(raw) }; }
     catch { return { raw, stored: 'unreadable' }; }
+  }
+
+  /**
+   * Cuts a spent session's token locator to the life of its tombstone, so the credential keeps resolving to the tombstone
+   * while it lasts and leaves nothing behind once it is gone. Best effort: a locator left longer resolves to a missing
+   * record, which reads as not found and is deleted then.
+   */
+  private async expireLocator(tokenHash: string, tombstoneTtl: number): Promise<void> {
+    const key = this.o.keys.tokenIndex(tokenHash);
+    try {
+      if (tombstoneTtl < 1) await this.o.redis.del(key);
+      else await this.o.redis.expire(key, tombstoneTtl);
+    } catch { /* derived cleanup is best effort */ }
   }
 
   private async safeDel(key: string): Promise<void> { try { await this.o.redis.del(key); } catch { /* derived cleanup is best effort */ } }
