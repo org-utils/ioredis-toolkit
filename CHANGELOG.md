@@ -1,11 +1,5 @@
 # Changelog
 
-## 0.0.2
-
-### Patch Changes
-
-- 1d2d212: initial commit
-
 ## 0.1.0
 
 ### Major Changes
