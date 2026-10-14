@@ -1,22 +1,17 @@
 import { isCluster } from './cluster.js';
 import type { RedisConnection } from './types.js';
 
-/** Where a reported error came from: a source the reporting module names, and the logical channel where one applies. */
-export interface ErrorContext<Source extends string = string> {
-  /** The connection or component that produced the error. */
-  source: Source;
-  /** The logical channel, without the namespace, where the error concerns one. */
-  channel?: string;
-}
+/** Where a reported error came from: the connection or component the reporting module names, and any detail that module adds. */
+export type ErrorContext<Source extends string = string, Detail extends object = object> = { source: Source } & Detail;
 
 /** Receives errors the package cannot raise to a caller. It never throws. */
-export type ErrorReporter<Source extends string = string> = (error: unknown, context: ErrorContext<Source>) => void;
+export type ErrorReporter<Source extends string = string, Detail extends object = object> = (error: unknown, context: ErrorContext<Source, Detail>) => void;
 
 /**
  * Wraps an application-supplied hook so that reporting can never fail: a hook that throws, or returns a promise
  * that rejects, is contained. Without a hook, errors are dropped.
  */
-export function containedReporter<Source extends string>(hook?: (error: unknown, context: ErrorContext<Source>) => unknown): ErrorReporter<Source> {
+export function containedReporter<Source extends string, Detail extends object = object>(hook?: (error: unknown, context: ErrorContext<Source, Detail>) => unknown): ErrorReporter<Source, Detail> {
   return (error, context) => {
     if (!hook) return;
     try {
