@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { safeUserTag, KeyStrategy } from '../redis/index.js';
 
 /** Centralizes session Redis key construction and user hash-tagging. */
@@ -24,8 +23,6 @@ export class SessionKeyStrategy {
   securityVersionByTag(userTag: string): string { return this.keys.key('security-version', this.keys.hashTag(userTag)); }
   /** Builds the secondary token-hash locator key. */
   tokenIndex(tokenHash: string): string { return this.keys.key('token-index', tokenHash); }
-  /** Builds a user-scoped SHA-256 idempotency key without storing the raw idempotency value. */
-  idempotency(userId: string, key: string): string { return this.keys.key('idem', this.keys.hashTag(this.userTag(userId)), createHash('sha256').update(key).digest('hex')); }
   /** Builds the revocation record key for a JTI. */
   revoked(jti: string): string { return this.keys.key('revoked', jti); }
 }

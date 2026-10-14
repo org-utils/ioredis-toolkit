@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -7,6 +7,15 @@ import { manifest, root } from '../support/exports-map.js';
 
 /** What a checkout does not carry: installed dependencies, the repository itself, and the output of an earlier build. */
 const notCheckedOut = new Set(['node_modules', '.git', 'dist']);
+
+/** The entries of the manifest's `files` that publish something, leaving out the `!` ones that carve exceptions out of them. */
+const publishing = manifest.files.filter(entry => !entry.startsWith('!'));
+
+/**
+ * What the repository keeps under a published directory for its own maintainers, which a consumer has no use for.
+ * Listed here rather than read from the manifest's `!` entries, so dropping an exclusion from the manifest fails the suite.
+ */
+const maintainerOnly = ['docs/agents', 'docs/ACCEPTANCE-REPORT.md'];
 
 /** Every file the manifest sends a consumer's import to: `main`, `types`, and each target in the exports map. */
 const pointedAt = [...new Set([manifest.main, manifest.types, ...Object.values(manifest.exports).flatMap(target => typeof target === 'string' ? [target] : Object.values(target))])];
@@ -39,13 +48,19 @@ describe('packed tarball', () => {
     rmSync(checkout, { recursive: true, force: true });
   });
 
-  it.each(manifest.files)('%s, which the manifest publishes, is in the tarball', entry => {
+  it.each(publishing)('%s, which the manifest publishes, is in the tarball', entry => {
     expect(publishedBy(entry)).not.toEqual([]);
   });
 
   it('holds nothing but the manifest and what it publishes', () => {
-    const published = new Set(['package.json', ...manifest.files.flatMap(publishedBy)]);
+    const published = new Set(['package.json', ...publishing.flatMap(publishedBy)]);
     expect(packed.filter(file => !published.has(file))).toEqual([]);
+  });
+
+  it.each(maintainerOnly)('%s, which is for the repository\'s maintainers, is not in the tarball', entry => {
+    // Present in the copy that was packed, so its absence from the tarball is the manifest's doing.
+    expect(existsSync(path.join(checkout, entry))).toBe(true);
+    expect(publishedBy(entry)).toEqual([]);
   });
 
   it.each(pointedAt)('%s, which the manifest points a consumer at, is in the tarball', target => {

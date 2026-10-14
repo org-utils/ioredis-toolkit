@@ -65,31 +65,5 @@ if not raw then return {0} end
 if redis.sha1hex(raw) ~= ARGV[1] then return {-1} end
 redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
 return {1}
-`,
-  'delete': `-- KEYS[1] session key
-return redis.call('DEL', KEYS[1])
-`,
-  'enforce_limit': `-- Bounded helper. The application must pass session keys to delete as KEYS.
--- KEYS[1] user index; KEYS[2..N] session keys corresponding to the oldest members.
--- ARGV[1] max sessions; ARGV[2] number of candidate keys.
-local max=tonumber(ARGV[1])
-local candidateCount=tonumber(ARGV[2])
-local count=redis.call('ZCARD', KEYS[1])
-if max <= 0 or count <= max then return {0} end
-local excess=math.min(count-max, candidateCount)
-local removed=0
-for i=1,excess do
-  local tokenHash=redis.call('ZRANGE', KEYS[1], 0, 0)[1]
-  if not tokenHash then break end
-  redis.call('ZREM', KEYS[1], tokenHash)
-  redis.call('DEL', KEYS[i+1])
-  removed=removed+1
-end
-return {removed}
-`,
-  'cleanup_index': `-- KEYS[1] user index
--- ARGV[1..N] stale token hashes (user-index ZSET members, not JTIs)
-for i=1,#ARGV do redis.call('ZREM', KEYS[1], ARGV[i]) end
-return #ARGV
 `
 } as const;
