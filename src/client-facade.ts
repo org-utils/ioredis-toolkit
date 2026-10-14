@@ -79,7 +79,7 @@ export class RedisClient extends RedisClientWrapper {
   private sessionModule: SessionManager | undefined;
   private readonly moduleConfig: ModuleConfigs;
   private readonly dependencies: RedisClientDependencies;
-  private readonly report: ErrorReporter<RedisErrorSource>;
+  private readonly report: ErrorReporter<RedisErrorSource, Pick<RedisErrorContext, 'channel'>>;
   private retiredPubSub: Promise<void> = Promise.resolve();
   /** Whether the current Pub/Sub module has a subscription live or in flight, which reconfiguring it would drop. */
   private pubsubLive = false;
@@ -88,7 +88,7 @@ export class RedisClient extends RedisClientWrapper {
   constructor(connection: ReturnType<typeof createRedisConnection>, config: RedisClientConfig, dependencies: RedisClientDependencies = {}) {
     super(connection);
     this.dependencies = dependencies;
-    this.report = containedReporter(dependencies.onError);
+    this.report = containedReporter<RedisErrorSource, Pick<RedisErrorContext, 'channel'>>(dependencies.onError);
     reportConnectionErrors(connection, this.report, 'connection');
     this.moduleConfig = parseModuleConfigs(config);
   }

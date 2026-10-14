@@ -18,13 +18,13 @@ export class RedisPubSub {
   /**
    * Creates a Pub/Sub module whose subscriptions run on a duplicate of the shared connection, opened by the first
    * subscribe. Errors on that connection, and every failure of a handler, go to `report` and never crash the process;
-   * without a `report` they are dropped.
+   * without a `report` they are dropped. A handler's failure is reported with its logical `channel`, without the namespace.
    * `onLiveChange` is told whether any subscription is live each time that changes.
    */
   constructor(
     private readonly redis: RedisClientWrapper,
     private readonly config: PubSubConfig,
-    private readonly report: ErrorReporter<'subscriber' | 'pubsub-handler'> = containedReporter(),
+    private readonly report: ErrorReporter<'subscriber' | 'pubsub-handler', { channel?: string }> = containedReporter(),
     private readonly onLiveChange: (live: boolean) => void = () => undefined,
   ) {
     this.keys = new KeyStrategy(config.namespace);
