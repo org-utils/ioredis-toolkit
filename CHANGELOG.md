@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.9
+
+### Patch Changes
+
+- 7701c36: `revoke()` of a consumed credential no longer loses to a rotation of its successor that is running at the same time (#83).
+  
+  - If rotation consumed the session at the end of the chain between `revoke()`'s read and its write, the revocation overwrote the consumed record. That erased its replay signal and its link, and the session that rotation created stayed active. The revocation now goes on to end that successor, and then puts back what it replaced.
+  - **Behaviour change:** if the revocation reaches a link whose successor the rotation has not created yet, it writes a revoked tombstone in that successor's place. The rotation then throws `SessionRotationError` instead of leaving an active session behind after the logout. A `rotate()` that runs at the same time as a logout can therefore now fail with `SessionRotationError`, its credential consumed.
+  - The revocation write stays unconditional, so concurrent touches still cannot hold a revocation off.
+- 1f32b8b: `revoke()` given a credential that rotation already consumed now ends its successor, the session that replaced it, so a user logging out with a stale cookie is logged out (#81).
+  
+  - It follows the rotation chain from successor to successor and revokes the session at its end, if that one is still active.
+  - **Behaviour change:** the consumed credential itself is left as it is. It keeps validating as `consumed`, and `rotate()` on it keeps throwing `SessionReplayError`. Before, `revoke()` rewrote it as `revoked`, which hid the replay signal and restarted its tombstone's 300-second cap.
+  - Replay on its own still ends no session. To end every session of a user on `SessionReplayError`, call `revokeAll()` or bump the security version.
+  - A consumed session's record now holds `successorId` and `successorJti`, linking it to its successor. Sessions consumed by an earlier release have no link, so revoking their credential ends nothing.
+
 ## 1.0.8
 
 ### Patch Changes
