@@ -34,6 +34,8 @@ Max-session enforcement (`create_session`) and revocation (`revoke()`, and rotat
 
 The user's session set lives as long as its longest-lived session: `create_session` extends its TTL to at least the new session's, comparing in Lua rather than with `EXPIRE GT` so Redis 6 keeps working. A set written by an earlier version without a TTL is given one that outlives every record it holds. Stale members are still pruned lazily by `list()` and by eviction.
 
+The user's security version lives as long as that set, so it is present whenever a session it is checked against can still validate. `create_session` extends its TTL to the set's and never shortens it; a version written by an earlier version without a TTL is given the set's. `setSecurityVersion()` writes it, in the same slot, with a TTL of the longer of the set's and the configured session `ttl`, so that a `create()` already under way with the previous version still meets the new one. While the set has no TTL, neither has the version.
+
 ## Decision: rotation is two-phase
 
 A predecessor is consumed atomically. A successor is created separately because the token-hash key is unrelated to the predecessor's key slot. This can produce a safe availability failure after consumption, but cannot produce two valid successors.

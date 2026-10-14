@@ -370,6 +370,93 @@ describeOnEachTopology('sessions against real Redis', redis => {
       return keys[0]!;
     }
 
+    /** The one key under a namespace holding a user's session set. */
+    async function sessionSetKey(namespace: string): Promise<string> {
+      const keys: string[] = [];
+      for (const key of await redis.keysUnder(namespace)) if ((await redis.observer.type(key)) === 'zset') keys.push(key);
+      expect(keys).toHaveLength(1);
+      return keys[0]!;
+    }
+
+    /** When a key expires, as a Unix time in milliseconds; -1 when it has no expiry. */
+    async function expiresAt(key: string): Promise<number> { return Number(await redis.observer.call('PEXPIRETIME', key)); }
+
+    it('leaves no key without an expiry after a create() and a bump', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      await sessions.setSecurityVersion('integration-user', 4);
+
+      for (const key of await redis.keysUnder(namespace)) expect(await redis.observer.ttl(key), key).toBeGreaterThan(0);
+    });
+
+    it('expires the stored version with the user\'s session set', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+
+      const setExpiry = await expiresAt(await sessionSetKey(namespace));
+      expect(setExpiry).toBeGreaterThan(0);
+      expect(await expiresAt(await securityVersionKey(namespace))).toBe(setExpiry);
+    });
+
+    it('extends the stored version when a longer-lived session is created, and never shortens it', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true, ttl: 3600 });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3, ttl: 600 });
+      const versionKey = await securityVersionKey(namespace);
+      const first = await expiresAt(versionKey);
+
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      const extended = await expiresAt(versionKey);
+      expect(extended).toBeGreaterThan(first);
+      expect(extended).toBe(await expiresAt(await sessionSetKey(namespace)));
+
+      await sessions.create({ userId: 'integration-user', securityVersion: 3, ttl: 60 });
+      expect(await expiresAt(versionKey)).toBe(extended);
+    });
+
+    it('keeps a bumped version for one session ttl when the user has no sessions', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true, ttl: 3600 });
+      await sessions.setSecurityVersion('integration-user', 4);
+
+      const versionKey = await securityVersionKey(namespace);
+      expect(await redis.observer.get(versionKey)).toBe('4');
+      expect(await redis.observer.ttl(versionKey)).toBeGreaterThanOrEqual(3599);
+      expect(await redis.observer.ttl(versionKey)).toBeLessThanOrEqual(3600);
+    });
+
+    it('keeps a bumped version as long as the user\'s longest-lived session when that outlasts the session ttl', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true, ttl: 600 });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3, ttl: 7200 });
+      await sessions.setSecurityVersion('integration-user', 4);
+
+      expect(await expiresAt(await securityVersionKey(namespace))).toBe(await expiresAt(await sessionSetKey(namespace)));
+    });
+
+    it('gives a version stored without an expiry by an earlier release one at the next create()', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      const versionKey = await securityVersionKey(namespace);
+      await redis.observer.persist(versionKey);
+
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      expect(await expiresAt(versionKey)).toBe(await expiresAt(await sessionSetKey(namespace)));
+    });
+
+    it('keeps a bumped version without an expiry while the user\'s session set has none', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled: true });
+      await sessions.create({ userId: 'integration-user', securityVersion: 3 });
+      await redis.observer.persist(await sessionSetKey(namespace));
+
+      await sessions.setSecurityVersion('integration-user', 4);
+      expect(await redis.observer.ttl(await securityVersionKey(namespace))).toBe(-1);
+    });
+
     it('stores the version the first session of a user is created with', async () => {
       const sessions = sessionsIn(redis.newNamespace(), { securityVersionEnabled: true });
       const created = await sessions.create({ userId: 'integration-user', securityVersion: 3 });

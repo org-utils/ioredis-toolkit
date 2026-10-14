@@ -188,6 +188,8 @@ A common password-reset/logout-all pattern is to increment the user's security v
 
 With `securityVersionEnabled`, `create()` requires `securityVersion`, and a session validates only while its version equals the one stored for its user. Turning the feature on needs no backfill. When no version is stored for a user, `create()` stores the one it is given, set only if absent, together with the session. `create()` never overwrites a stored version, so only `setSecurityVersion()` moves it, and a session created with an older version than the stored one validates as `invalid` from the start. If the stored version is missing (never written, or evicted under memory pressure), validation fails closed: every session of that user validates as `invalid` until the next `create()` or `setSecurityVersion()` stores one.
 
+The stored version expires with the user's sessions. It lives as long as the user's longest-lived session, and `create()` extends it, never shortening it. After `setSecurityVersion()` it lives for at least the configured session `ttl` as well. Once it has expired, the user has no session left for it to invalidate, and the next `create()` stores the version it is given, as for a new user. So after a bump, a user with no sessions for longer than the session `ttl` can be given a session with the previous version; pass the user's current version to `create()`.
+
 ## `revokeAll(userId, limit?)`
 
 Revokes a bounded batch and returns `{ affected, remaining }` so large user indexes do not require loading every session into memory. The revoked sessions are deleted outright, so their credentials then validate as `not_found`. It works the same on standalone Redis and on Cluster.
