@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { connectClient, redisFixture, redisUrl } from '../support/redis.js';
+import { describeOnEachTopology } from '../support/redis.js';
 
 /** Asserts the commands ran Lua by its SHA and none of them carried Lua source: `eval` sends a script body with the call and `script` uploads one. */
 function expectLuaBySha(commands: string[][]): void {
@@ -9,12 +9,10 @@ function expectLuaBySha(commands: string[][]): void {
   expect(names).not.toContain('script');
 }
 
-describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
-  const redis = redisFixture();
-
+describeOnEachTopology('Lua by cached SHA against real Redis', redis => {
   it('releases a lock without sending the script body once the server has it', async () => {
     const namespace = redis.newNamespace();
-    const { lock } = connectClient({ lock: { enabled: true, namespace } });
+    const { lock } = redis.connectClient({ lock: { enabled: true, namespace } });
     const first = await lock.acquire('a');
     await lock.release('a', first.token);
 
@@ -25,7 +23,7 @@ describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
 
   it('extends a lock without sending the script body once the server has it', async () => {
     const namespace = redis.newNamespace();
-    const { lock } = connectClient({ lock: { enabled: true, namespace } });
+    const { lock } = redis.connectClient({ lock: { enabled: true, namespace } });
     const { token } = await lock.acquire('a', 10);
     await lock.extend('a', token, 20);
 
@@ -36,7 +34,7 @@ describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
 
   it('consumes from a rate-limit window without sending the script body once the server has it', async () => {
     const namespace = redis.newNamespace();
-    const { rateLimiter } = connectClient({ rateLimit: { enabled: true, namespace, windowSeconds: 3600, maxRequests: 5 } });
+    const { rateLimiter } = redis.connectClient({ rateLimit: { enabled: true, namespace, windowSeconds: 3600, maxRequests: 5 } });
     await rateLimiter.consume('a');
 
     expectLuaBySha(await redis.commandsFromClientsOf(namespace, async () => { expect(await rateLimiter.consume('a')).toMatchObject({ allowed: true, count: 2, remaining: 3 }); }));
@@ -44,7 +42,7 @@ describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
 
   it('creates and touches a session without sending a script body once the server has it', async () => {
     const namespace = redis.newNamespace();
-    const { sessions } = connectClient({ sessions: { enabled: true, namespace, touchInterval: 0 } });
+    const { sessions } = redis.connectClient({ sessions: { enabled: true, namespace, touchInterval: 0 } });
     const first = await sessions.create({ userId: 'integration-user' });
     await sessions.touch(first.token);
 
@@ -57,7 +55,7 @@ describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
   describe('when the server has evicted its scripts between calls', () => {
     it('still releases a lock only for its holder', async () => {
       const namespace = redis.newNamespace();
-      const { lock } = connectClient({ lock: { enabled: true, namespace } });
+      const { lock } = redis.connectClient({ lock: { enabled: true, namespace } });
       const first = await lock.acquire('a');
       await lock.release('a', first.token);
 
@@ -72,7 +70,7 @@ describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
 
     it('still extends a lock', async () => {
       const namespace = redis.newNamespace();
-      const { lock } = connectClient({ lock: { enabled: true, namespace } });
+      const { lock } = redis.connectClient({ lock: { enabled: true, namespace } });
       const { token } = await lock.acquire('a', 10);
       await lock.extend('a', token, 20);
 
@@ -84,7 +82,7 @@ describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
 
     it('still counts against the same rate-limit window, and goes back to sending only the SHA', async () => {
       const namespace = redis.newNamespace();
-      const { rateLimiter } = connectClient({ rateLimit: { enabled: true, namespace, windowSeconds: 3600, maxRequests: 2 } });
+      const { rateLimiter } = redis.connectClient({ rateLimit: { enabled: true, namespace, windowSeconds: 3600, maxRequests: 2 } });
       await rateLimiter.consume('a');
 
       await redis.flushScriptCache();
@@ -94,7 +92,7 @@ describe.skipIf(!redisUrl)('Lua by cached SHA against real Redis', () => {
     });
 
     it('still creates and touches a session', async () => {
-      const { sessions } = connectClient({ sessions: { enabled: true, namespace: redis.newNamespace(), touchInterval: 0 } });
+      const { sessions } = redis.connectClient({ sessions: { enabled: true, namespace: redis.newNamespace(), touchInterval: 0 } });
       await sessions.create({ userId: 'integration-user' });
 
       await redis.flushScriptCache();

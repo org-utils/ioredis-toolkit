@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { connectClient, eventually, redisFixture, redisUrl } from '../support/redis.js';
+import { describeOnEachTopology, eventually } from '../support/redis.js';
 
 const DAY_MS = 86_400_000;
 
@@ -9,8 +9,7 @@ function skewLocalClock(byMs: number): void {
   vi.spyOn(Date, 'now').mockImplementation(() => accurate() + byMs);
 }
 
-describe.skipIf(!redisUrl)('authoritative time against real Redis', () => {
-  const redis = redisFixture();
+describeOnEachTopology('authoritative time against real Redis', redis => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   async function serverSeconds(): Promise<number> { return Number((await redis.observer.time())[0]); }
@@ -18,7 +17,7 @@ describe.skipIf(!redisUrl)('authoritative time against real Redis', () => {
   describe('rate limiting', () => {
     /** A limiter as one application server would hold it; every call is a separate host on the same namespace. */
     function limiterOn(namespace: string) {
-      return connectClient({ rateLimit: { enabled: true, namespace, windowSeconds: 3600, maxRequests: 2 } }).rateLimiter;
+      return redis.connectClient({ rateLimit: { enabled: true, namespace, windowSeconds: 3600, maxRequests: 2 } }).rateLimiter;
     }
 
     it('holds the limit across hosts whose local clocks disagree', async () => {
@@ -64,7 +63,7 @@ describe.skipIf(!redisUrl)('authoritative time against real Redis', () => {
 
   describe('sessions', () => {
     function sessionsWith(lifetime: { ttl: number; idleTimeout?: number; touchInterval?: number }) {
-      return connectClient({ sessions: { enabled: true, namespace: redis.newNamespace(), ...lifetime } }).sessions;
+      return redis.connectClient({ sessions: { enabled: true, namespace: redis.newNamespace(), ...lifetime } }).sessions;
     }
 
     it('stamps a session in server time on a host whose local clock is wrong', async () => {

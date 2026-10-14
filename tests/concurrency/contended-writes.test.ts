@@ -1,19 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { SessionConflictError, SessionStorageError } from '../../src/index.js';
 import type { SessionConfig, SessionManager } from '../../src/index.js';
 import { keyManager } from '../support/key-manager.js';
-import { connectClient, redisFixture, redisUrl } from '../support/redis.js';
+import { describeOnEachTopology } from '../support/redis.js';
 
-describe.skipIf(!redisUrl)('contended session writes', () => {
-  const redis = redisFixture();
-
+describeOnEachTopology('contended session writes', redis => {
   const encryptionKeyManager = keyManager();
 
   function sessionsIn(storage: 'plain' | 'encrypted', config: Partial<SessionConfig> = {}): SessionManager {
     const sessions = { enabled: true, namespace: redis.newNamespace(), ...config };
     return storage === 'encrypted'
-      ? connectClient({ sessions: { ...sessions, encryption: { enabled: true } } }, { encryptionKeyManager }).sessions
-      : connectClient({ sessions }).sessions;
+      ? redis.connectClient({ sessions: { ...sessions, encryption: { enabled: true } } }, { encryptionKeyManager }).sessions
+      : redis.connectClient({ sessions }).sessions;
   }
 
   it.each(['plain', 'encrypted'] as const)('lets exactly one of several simultaneous updates at one version succeed in %s storage', async storage => {

@@ -1,0 +1,61 @@
+name: Checks
+
+# Every pull request, and every release before it publishes (ci.yml calls this workflow).
+on:
+  pull_request:
+  workflow_call:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    services:
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+
+    # The real-Redis suites run once per topology named here, and skip a topology that is not.
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+      REDIS_CLUSTER_NODES: 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # A service container cannot be given the command that starts a cluster node, so the cluster
+      # comes from the same compose file contributors run locally.
+      - name: Start Redis Cluster
+        run: docker compose -f docker/cluster.compose.yml up -d --wait
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit, security and concurrency tests
+        run: bun run test
+
+      - name: Integration tests
+        run: bun run test:integration

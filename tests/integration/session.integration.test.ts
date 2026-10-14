@@ -7,17 +7,15 @@ import type { KeyManager, SessionConfig, SessionManager, SessionMetrics } from '
 import { unknownCredential } from '../support/credential.js';
 import { expectPackageError } from '../support/errors.js';
 import { hashSlot } from '../support/hash-slot.js';
-import { connectClient, connectionConfig, redisFixture, redisUrl } from '../support/redis.js';
+import { describeOnEachTopology } from '../support/redis.js';
 import { keyManager } from '../support/key-manager.js';
 
 /** The secret half of an opaque credential; the other half is the JTI, which is stored by design. */
 function secretOf(token: string): string { return token.slice(token.indexOf('.') + 1); }
 
-describe.skipIf(!redisUrl)('sessions against real Redis', () => {
-  const redis = redisFixture();
-
+describeOnEachTopology('sessions against real Redis', redis => {
   function sessionsIn(namespace: string, config: Partial<SessionConfig> = {}, encryptionKeyManager?: KeyManager): SessionManager {
-    return connectClient({ sessions: { enabled: true, namespace, ...config } }, encryptionKeyManager ? { encryptionKeyManager } : {}).sessions;
+    return redis.connectClient({ sessions: { enabled: true, namespace, ...config } }, encryptionKeyManager ? { encryptionKeyManager } : {}).sessions;
   }
 
   /** The one key under a namespace holding a session envelope. */
@@ -35,7 +33,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     const lifetime = { rolling: true, touchInterval: 0, ttl: 600, idleTimeout: 300, absoluteTimeout: 600 };
     const manager = storage === 'encrypted'
       ? sessionsIn(namespace, { ...lifetime, encryption: { enabled: true } }, keyManager())
-      : createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace, ...lifetime }).manager;
+      : createSessionManagerFromRedis(redis.connectionConfig(), { enabled: true, namespace, ...lifetime }).manager;
     /** Whatever wrote a record last, encrypted storage must not leave its user readable in Redis. */
     async function expectStoredAsConfigured(): Promise<void> {
       const stored = await redis.storedUnder(namespace);
@@ -124,7 +122,8 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
     expect(await redis.keysUnder(elsewhere)).toHaveLength(0);
   });
 
-  it('leaves no key behind for a session evicted by maxSessionsPerUser', async () => {
+  // On Cluster the creation script deletes the evicted token locator, which lives in another slot, so creation fails.
+  redis.itFailsOnClusterUntil('#53', /non local key/, 'leaves no key behind for a session evicted by maxSessionsPerUser', async () => {
     const namespace = redis.newNamespace();
     const sessions = sessionsIn(namespace, { maxSessionsPerUser: 1 });
     const created = [await sessions.create({ userId: 'integration-user' }), await sessions.create({ userId: 'integration-user' })];
@@ -246,7 +245,7 @@ describe.skipIf(!redisUrl)('sessions against real Redis', () => {
       let onValidated = (): void => undefined;
       // rotate() reports the validation metric after it accepts the credential and before it consumes it.
       const metrics: SessionMetrics = { increment: name => { if (name === 'session.validate') onValidated(); }, observe: () => undefined, gauge: () => undefined };
-      const { sessions } = connectClient({ sessions: { enabled: true, namespace } }, { metrics });
+      const { sessions } = redis.connectClient({ sessions: { enabled: true, namespace } }, { metrics });
       const created = await sessions.create({ userId: 'integration-user' });
       const key = await envelopeKey(namespace);
       onValidated = () => { void redis.observer.del(key); };

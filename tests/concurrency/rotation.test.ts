@@ -1,20 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { expect } from 'vitest';
 import { createSessionManagerFromRedis, SessionReplayError } from '../../src/index.js';
 import type { SessionManager } from '../../src/index.js';
 import { keyManager } from '../support/key-manager.js';
-import { connectClient, connectionConfig, redisFixture, redisUrl } from '../support/redis.js';
+import { describeOnEachTopology } from '../support/redis.js';
 
-describe.skipIf(!redisUrl)('concurrent rotation', () => {
-  const redis = redisFixture();
-
+describeOnEachTopology('concurrent rotation', redis => {
   function sessionsIn(storage: 'plain' | 'encrypted'): SessionManager {
     const namespace = redis.newNamespace();
     return storage === 'encrypted'
-      ? connectClient({ sessions: { enabled: true, namespace, encryption: { enabled: true } } }, { encryptionKeyManager: keyManager() }).sessions
-      : createSessionManagerFromRedis(connectionConfig(), { enabled: true, namespace }).manager;
+      ? redis.connectClient({ sessions: { enabled: true, namespace, encryption: { enabled: true } } }, { encryptionKeyManager: keyManager() }).sessions
+      : createSessionManagerFromRedis(redis.connectionConfig(), { enabled: true, namespace }).manager;
   }
 
-  it.each(['plain', 'encrypted'] as const)('lets exactly one of several simultaneous rotations of a credential succeed in %s storage', async storage => {
+  // On Cluster a losing rotation can read the record before the winner consumes it and its index entry after, and is refused as invalid.
+  for (const storage of ['plain', 'encrypted'] as const) redis.itFailsOnClusterUntil('#60', /Session invalid .*to be an instance of SessionReplayError/, `lets exactly one of several simultaneous rotations of a credential succeed in ${storage} storage`, async () => {
     const manager = sessionsIn(storage);
     const created = await manager.create({ userId: 'integration-user' });
 

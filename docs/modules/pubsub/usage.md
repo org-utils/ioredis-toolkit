@@ -37,6 +37,8 @@ Repeated `subscribe()` calls for the same physical channel issue a single underl
 
 JSON-encodes a value and publishes it. The return value is Redis's subscriber count at publication time.
 
+On Redis Cluster that count covers only the clients subscribed through the node that took the `PUBLISH`. The message still reaches subscribers on every node, so a count of 0 does not mean nobody received it.
+
 ```ts
 const subscribers = await redis.pubsub.publish('orders.created', {
   orderId: 'ord_123',

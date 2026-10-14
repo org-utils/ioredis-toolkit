@@ -154,7 +154,7 @@ bun run test:integration
 bun run build
 ```
 
-Real Redis integration tests require a Redis deployment. Docker definitions are provided under `docker/`.
+The real-Redis suites run against standalone Redis (`REDIS_URL`) and Redis Cluster (`REDIS_CLUSTER_NODES`), skipping a topology that is not configured. [docs/TESTING.md](./docs/TESTING.md#starting-both-topologies-locally) explains how to start both with the Docker definitions under `docker/`.
 
 ## Design principle
 

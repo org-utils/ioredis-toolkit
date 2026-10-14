@@ -1,18 +1,18 @@
-import { describe, expect, it } from 'vitest';
-import { connectClient, eventually, redisFixture, redisUrl } from '../support/redis.js';
+import { expect, it } from 'vitest';
+import { describeOnEachTopology, eventually } from '../support/redis.js';
 
-describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
-  const redis = redisFixture();
-
+describeOnEachTopology('Pub/Sub against real Redis', redis => {
   it('publishes JSON-encoded values to the namespaced channel', async () => {
     const namespace = redis.newNamespace();
-    const { pubsub } = connectClient({ pubsub: { enabled: true, namespace } });
+    const { pubsub } = redis.connectClient({ pubsub: { enabled: true, namespace } });
     const listener = redis.observer.duplicate();
     try {
       const heard: Array<{ channel: string; message: string }> = [];
       listener.on('pmessage', (_pattern, channel, message) => { heard.push({ channel, message }); });
       await listener.psubscribe(`${namespace}*`);
-      expect(await pubsub.publish('orders', { id: 1 })).toBe(1);
+      const receivers = await pubsub.publish('orders', { id: 1 });
+      // A cluster counts only the receivers connected to the node that took the PUBLISH.
+      if (redis.topology === 'standalone') expect(receivers).toBe(1);
       await eventually(() => expect(heard).toEqual([{ channel: `${namespace}:orders`, message: JSON.stringify({ id: 1 }) }]));
     } finally {
       await listener.quit();
@@ -22,7 +22,7 @@ describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
 
   it('delivers parsed JSON messages to a subscribed handler and drops a malformed one', async () => {
     const namespace = redis.newNamespace();
-    const { pubsub } = connectClient({ pubsub: { enabled: true, namespace } });
+    const { pubsub } = redis.connectClient({ pubsub: { enabled: true, namespace } });
     try {
       const received: unknown[] = [];
       await pubsub.subscribe('orders', message => { received.push(message); });
@@ -35,7 +35,8 @@ describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
   });
 
   it('delivers once to each handler on a channel and leaves the channel when the last handler does', async () => {
-    const { pubsub } = connectClient({ pubsub: { enabled: true, namespace: redis.newNamespace() } });
+    const namespace = redis.newNamespace();
+    const { pubsub } = redis.connectClient({ pubsub: { enabled: true, namespace } });
     try {
       const first: unknown[] = [];
       const second: unknown[] = [];
@@ -50,7 +51,7 @@ describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
       expect(first).toEqual([1]);
 
       await secondSubscription.unsubscribe();
-      expect(await pubsub.publish('orders', 3)).toBe(0);
+      expect(await redis.subscribersTo(`${namespace}:orders`)).toBe(0);
     } finally {
       await pubsub.close();
     }
@@ -58,10 +59,10 @@ describe.skipIf(!redisUrl)('Pub/Sub against real Redis', () => {
 
   it('stops receiving once closed', async () => {
     const namespace = redis.newNamespace();
-    const { pubsub } = connectClient({ pubsub: { enabled: true, namespace } });
+    const { pubsub } = redis.connectClient({ pubsub: { enabled: true, namespace } });
     await pubsub.subscribe('orders', () => undefined);
-    expect(await redis.observer.publish(`${namespace}:orders`, '1')).toBe(1);
+    expect(await redis.subscribersTo(`${namespace}:orders`)).toBe(1);
     await pubsub.close();
-    await eventually(async () => expect(await redis.observer.publish(`${namespace}:orders`, '2')).toBe(0));
+    await eventually(async () => expect(await redis.subscribersTo(`${namespace}:orders`)).toBe(0));
   });
 });
