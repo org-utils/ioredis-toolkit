@@ -7,14 +7,14 @@
 | Token enumeration | Authentication existence | Opaque token; safe invalid results | Timing differences should be monitored; public APIs should not expose internal reasons |
 | Session fixation | Login/session identity | Fresh random token creation and rotation | Host auth flow must replace pre-auth session after authentication |
 | Replay after rotation | Refresh/session credential | Atomic predecessor consumption | Rotation is non-idempotent; test concurrent rotate |
-| Replay after logout | Session state | revoke/destroy + index checks | A request already authorized before logout may complete; authorization transaction boundaries remain application-specific |
+| Replay after logout | Session state | revoke/destroy + session set checks | A request already authorized before logout may complete; authorization transaction boundaries remain application-specific |
 | Concurrent attacker requests | Session state | Compare-and-set state transitions and version checks | Test simultaneous touch/update/rotate |
 | Redis outage | Authentication state | Fail closed; storage errors distinct from invalid sessions | Application decides 401 vs 503; never fail open |
 | Uncaught connection-error crash | Availability (whole process) | Default `'error'` listener attached to every Redis connection the package opens, including the Pub/Sub subscriber connection | The listener forwards to the application's `onError` hook, with the source named, and contains a hook that throws; without a hook, errors are dropped rather than crashing the process |
 | Malformed cached/published payload | Availability | `RedisCache.get()` throws a typed `CacheError`; `RedisPubSub` silently drops an unparseable message | Neither crashes the process; a cache read failure still surfaces as an error to the caller rather than a silent miss |
 | Redis data exposure | Session metadata | Optional AES-256-GCM; TLS/ACLs/private network | Compromised app with key can decrypt |
-| Stale secondary index | Authorization | Session record independently validated; index only denies | `create()` eviction, `revoke()`, and rotation's `consume()` now remove their affected index member eagerly (not only via `list()`'s lazy self-heal), shrinking the window in which a stale entry can exist and be counted toward `maxSessionsPerUser` |
-| Redis eviction | Session state | TTL + index checks; operational memory policy required | Eviction can log users out; it must never authenticate them |
+| Stale token locator or session set member | Authorization | Session record independently validated; the session set only denies | `create()` eviction, `revoke()`, and rotation's `consume()` now remove their affected session set member eagerly (not only via `list()`'s lazy self-heal), shrinking the window in which a stale entry can exist and be counted toward `maxSessionsPerUser` |
+| Redis eviction | Session state | TTL + session set checks; operational memory policy required | Eviction can log users out; it must never authenticate them |
 | Old backup restore | Revocation state | Document restore as security event | Requires deployment-level security-version invalidation strategy |
 | CSRF | Cookie credential | Cookie flags + framework-level CSRF strategy | SameSite is not universal CSRF protection |
 | XSS | Browser auth state | HttpOnly cookie option | XSS can still act as user in browser; application CSP/output encoding required |

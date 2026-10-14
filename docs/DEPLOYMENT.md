@@ -11,7 +11,7 @@ Lua scripts are embedded and versioned with the package build. Every module that
 1. Keep old application binaries available until all new sessions are compatible with the old reader.
 2. Do not remove old serializer support until the compatibility window closes.
 3. Roll back application code before removing Redis key formats.
-4. Clean obsolete indexes only with bounded maintenance jobs.
+4. Clean stale token locators and session set members only with bounded maintenance jobs.
 
 ## Disaster recovery
 

@@ -6,4 +6,4 @@ The package does not know whether the caller is an administrator or the owner of
 
 ## Token lookup
 
-`validate(token)` performs a token-hash lookup, then loads and validates the authoritative session record and checks the per-user authorization index. No raw token is used as a Redis key.
+`validate(token)` performs a token-hash lookup, then loads and validates the authoritative session record and checks its membership in the user's session set. No raw token is used as a Redis key.

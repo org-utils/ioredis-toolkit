@@ -85,7 +85,7 @@ export class SessionService {
     if (session.expiresAt <= serverSeconds) return { valid: false, reason: 'expired' };
     if (session.absoluteExpiresAt !== null && session.absoluteExpiresAt <= serverSeconds) return { valid: false, reason: 'absolute_timeout' };
     if (session.idleExpiresAt !== null && session.idleExpiresAt <= serverSeconds) return { valid: false, reason: 'idle_timeout' };
-    if (!read.indexed) return { valid: false, reason: 'invalid' };
+    if (!read.inSessionSet) return { valid: false, reason: 'invalid' };
     if (this.o.config.securityVersionEnabled && (read.securityVersion === null || session.securityVersion !== Number(read.securityVersion))) return { valid: false, reason: 'invalid' };
     return { valid: true, read };
   }
@@ -177,7 +177,7 @@ export class SessionService {
     await this.o.repository.setSecurityVersion(userId, version);
   }
 
-  /** Revokes a bounded batch of the user's indexed sessions without unbounded memory use. */
+  /** Revokes a bounded batch of the sessions in the user's session set without unbounded memory use. */
   async revokeAll(userId: string, limit = this.o.config.maxBatchSize): Promise<{ affected: number; remaining: number }> {
     validateUserId(userId);
     return this.o.repository.revokeAll(userId, limit);

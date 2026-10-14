@@ -7,7 +7,7 @@ Exact Redis memory depends heavily on allocator overhead, key length, metadata, 
 Approximate:
 
 - Session key: namespace + fixed prefixes + 64-byte token hash + user hash tag.
-- User-index member: 64-byte token hash plus sorted-set overhead.
+- Session set member: 64-byte token hash plus sorted-set overhead.
 - Serialized record: fixed fields plus bounded metadata.
 - Token locator: token hash key + 64-byte token hash + user tag value.
 - Redis object/allocator overhead: measure with the target Redis version and representative payloads.
@@ -22,7 +22,7 @@ Before production sizing, create representative sessions with the largest expect
 - 10 million sessions
 - 50 million sessions
 
-Include token indexes, user indexes, replication, AOF/RDB overhead, allocator fragmentation, and peak write amplification.
+Include token locators, users' session sets, replication, AOF/RDB overhead, allocator fragmentation, and peak write amplification.
 
 ## Operational limits
 

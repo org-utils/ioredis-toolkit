@@ -52,4 +52,12 @@ _Avoid_: now, wall clock, system time
 The unit of an authenticated identity's continued access, held as a record in Redis and presented by a bearer credential. The record is authoritative; the credential is only a way to name it.
 _Avoid_: login, auth session, user session
 
-> The remaining session vocabulary — rotation, consume, replay, tombstone, revoke, the two distinct meanings of "index" — is known to be contested in the current code and has not been resolved yet. It is deliberately absent here rather than guessed at.
+**User's session set**:
+The per-user collection of every session a user currently holds, through which a user's sessions are listed, bounded and ended together. A session absent from its user's session set cannot authenticate.
+_Avoid_: index, user index, authorization index
+
+**Token locator**:
+The pointer from a credential to the user it belongs to, so that a session can be found from its credential alone.
+_Avoid_: index, token index
+
+> The remaining session vocabulary — rotation, consume, replay, tombstone, revoke — is known to be contested in the current code and has not been resolved yet. It is deliberately absent here rather than guessed at.
