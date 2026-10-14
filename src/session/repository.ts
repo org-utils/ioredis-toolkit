@@ -108,9 +108,9 @@ export class SessionRepository {
       if (!isRecord(stored) || stored.status === 'revoked' || hasExpired(stored, now)) throw new SessionRotationError('Session cannot be rotated');
       return { result: undefined, replacement: { ...stored, status: 'consumed', consumedAt: now, version: stored.version + 1 }, ttl: Math.max(1, tombstoneTtl) };
     });
-    await this.expireLocator(record.id, Math.max(1, tombstoneTtl));
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
+    await this.expireLocator(record.id, Math.max(1, tombstoneTtl));
   }
 
   /**
@@ -142,9 +142,9 @@ export class SessionRepository {
         else await this.o.redis.set(key, revoked, 'XX', 'EX', String(tombstoneTtl));
       } catch (error) { throw new SessionStorageError('Session revocation failed', error); }
     }
-    await this.expireLocator(record.id, tombstoneTtl);
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
+    await this.expireLocator(record.id, tombstoneTtl);
   }
 
   /** Removes the authoritative record and derived index entries. */
