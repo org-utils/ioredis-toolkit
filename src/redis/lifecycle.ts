@@ -1,4 +1,4 @@
-import { Cluster } from 'ioredis';
+import { isCluster } from './cluster.js';
 import type { RedisConnection } from './types.js';
 
 /** Where a reported error came from: a source the reporting module names, and the logical channel where one applies. */
@@ -34,7 +34,7 @@ export function containedReporter<Source extends string>(hook?: (error: unknown,
  */
 export function reportConnectionErrors<Source extends string>(connection: RedisConnection, report: ErrorReporter<Source>, source: Source): void {
   connection.on('error', (error: Error) => report(error, { source }));
-  if (connection instanceof Cluster) connection.on('node error', (error: Error) => report(error, { source }));
+  if (isCluster(connection)) connection.on('node error', (error: Error) => report(error, { source }));
 }
 
 const closing = new WeakMap<RedisConnection, Promise<void>>();

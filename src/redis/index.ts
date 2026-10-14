@@ -9,7 +9,7 @@ export { RedisClientWrapper } from './wrapper.js';
 export { RedisClock } from './clock.js';
 export { KeyStrategy } from './keys.js';
 export { ScriptRegistry } from './scripts.js';
-export { safeUserTag } from './cluster.js';
+export { isCluster, safeUserTag } from './cluster.js';
 export { parseRedisConnectionConfig } from './config.js';
 export { byteCap, moduleConfigSchema, parseConfig } from './config-base.js';
 export type { ByteCapOptions, ModuleConfigBase } from './config-base.js';

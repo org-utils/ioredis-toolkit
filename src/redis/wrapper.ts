@@ -1,8 +1,11 @@
-import { Cluster } from 'ioredis';
-import { redisHashSlot } from './cluster.js';
+import type { Cluster, Redis } from 'ioredis';
+import { isCluster, redisHashSlot } from './cluster.js';
 import { closeConnection } from './lifecycle.js';
 import type { ClusterFanoutOptions, RedisCommandClient, RedisConnection, RedisPipeline } from './types.js';
 export type { ClusterFanoutOptions } from './types.js';
+
+/** The most keys one DEL names, and the COUNT hint each SCAN page is asked for. */
+const DELETE_BATCH = 500;
 
 /**
  * Topology-independent Redis command adapter.
@@ -25,19 +28,14 @@ export class RedisClientWrapper implements RedisCommandClient {
   }
   /** Performs SETNX. */
   setnx(key: string, value: string): Promise<number> { return this.client.setnx(key, value); }
-  /** Deletes keys, splitting cross-slot deletions into safe groups in Cluster mode. */
+  /** Deletes keys, splitting cross-slot deletions into safe groups in Cluster mode. Deleting no keys contacts no server. */
   async del(...keys: string[]): Promise<number> {
-    if (keys.length <= 1 || !(this.client instanceof Cluster)) return this.client.del(...keys);
-    const groups = new Map<number, string[]>();
-    for (const key of keys) {
-      const slot = redisHashSlot(key);
-      const group = groups.get(slot) ?? [];
-      group.push(key);
-      groups.set(slot, group);
-    }
+    if (keys.length === 0) return 0;
+    if (keys.length === 1 || !isCluster(this.client)) return this.client.del(...keys);
     let deleted = 0;
-    await boundedMap([...groups.values()], 4, async group => {
-      for (const batch of chunk(group, 200)) deleted += await this.client.del(...batch);
+    await boundedMap([...groupBySlot(keys).values()], 4, async group => {
+      // Not `deleted += await …`, which reads the total before the wait and so loses what concurrent groups add meanwhile.
+      for (const batch of chunk(group, DELETE_BATCH)) { const count = await this.client.del(...batch); deleted += count; }
     });
     return deleted;
   }
@@ -123,7 +121,7 @@ export class RedisClientWrapper implements RedisCommandClient {
   /** Reads multiple keys while preserving input order and grouping Cluster requests by slot. */
   async mgetClusterAware(keys: string[], options: ClusterFanoutOptions = {}): Promise<Array<string | null>> {
     if (keys.length === 0) return [];
-    if (!(this.client instanceof Cluster)) return this.client.mget(...keys);
+    if (!isCluster(this.client)) return this.client.mget(...keys);
     const grouped = new Map<number, Array<{ key: string; index: number }>>();
     keys.forEach((key, index) => {
       const slot = redisHashSlot(key);
@@ -141,47 +139,78 @@ export class RedisClientWrapper implements RedisCommandClient {
 
   /** Scans all master nodes in Cluster mode or the standalone server otherwise. */
   async scanCluster(pattern: string, count = 500, options: ClusterFanoutOptions = {}): Promise<string[]> {
-    if (!(this.client instanceof Cluster)) {
-      const out: string[] = [];
-      let cursor = '0';
-      do {
-        const [next, keys] = await this.client.scan(cursor, 'MATCH', pattern, 'COUNT', String(count));
-        out.push(...keys);
-        cursor = next;
-      } while (cursor !== '0');
-      return out;
-    }
-    const nodes = this.client.nodes('master');
     const out: string[] = [];
-    await boundedMap(nodes, options.concurrency ?? 2, async node => {
-      let cursor = '0';
-      do {
-        const [next, keys] = await node.scan(cursor, 'MATCH', pattern, 'COUNT', String(count));
-        out.push(...keys);
-        cursor = next;
-      } while (cursor !== '0');
-    });
+    await this.scanPages(pattern, count, options, async page => { out.push(...page); });
     return out;
   }
 
-  /** Scans and deletes matching keys without using `KEYS`, `FLUSHDB`, or cross-slot multi-key commands. */
+  /**
+   * Scans and deletes matching keys without using `KEYS`, `FLUSHDB`, or cross-slot multi-key commands. Each page is
+   * deleted as the scan returns it, in DELs of at most {@link DELETE_BATCH} keys, so neither the matching keys nor any
+   * one command grows with the keyspace.
+   */
   async deletePatternClusterAware(pattern: string, options: ClusterFanoutOptions = {}): Promise<number> {
-    const keys = await this.scanCluster(pattern, 500, options);
-    if (keys.length === 0) return 0;
-    if (!(this.client instanceof Cluster)) return this.del(...keys);
-    const groups = new Map<number, string[]>();
-    for (const key of keys) {
-      const slot = redisHashSlot(key);
-      const group = groups.get(slot) ?? [];
-      group.push(key);
-      groups.set(slot, group);
-    }
     let deleted = 0;
-    await boundedMap([...groups.values()], options.concurrency ?? 4, async group => {
-      for (const batch of chunk(group, 200)) deleted += await this.del(...batch);
+    await this.scanPages(pattern, DELETE_BATCH, options, async (page, node) => {
+      // Pages from different masters are deleted concurrently, so each count is awaited before it is added.
+      const count = node ? await deleteOnNode(this.client as Cluster, node, page) : await deleteInBatches(this.client, page);
+      deleted += count;
     });
     return deleted;
   }
+
+  /**
+   * Hands each SCAN page to `onPage` before asking for the next, together with the master it came from on Cluster.
+   * A cluster that has not loaded its slot map yet knows no masters, so it is first given a command to wait on.
+   */
+  private async scanPages(pattern: string, count: number, options: ClusterFanoutOptions, onPage: (keys: string[], node?: Redis) => Promise<void>): Promise<void> {
+    const scanNode = async (node: Redis | undefined): Promise<void> => {
+      let cursor = '0';
+      do {
+        const [next, keys] = await (node ?? this.client as Redis).scan(cursor, 'MATCH', pattern, 'COUNT', String(count));
+        if (keys.length) await onPage(keys, node);
+        cursor = next;
+      } while (cursor !== '0');
+    };
+    if (!isCluster(this.client)) { await scanNode(undefined); return; }
+    if (this.client.nodes('master').length === 0) await this.client.ping();
+    await boundedMap(this.client.nodes('master'), options.concurrency ?? 2, scanNode);
+  }
+}
+
+/** Deletes keys from one server in DELs of at most {@link DELETE_BATCH} keys. */
+async function deleteInBatches(server: RedisConnection, keys: string[]): Promise<number> {
+  let deleted = 0;
+  for (const batch of chunk(keys, DELETE_BATCH)) deleted += await server.del(...batch);
+  return deleted;
+}
+
+/**
+ * Deletes one master's SCAN page in one round trip: a pipeline of single-slot DELs on that master. A key whose slot
+ * has moved since the scan is refused by the master, and is deleted again through the cluster, which follows the redirect.
+ */
+async function deleteOnNode(cluster: Cluster, node: Redis, keys: string[]): Promise<number> {
+  const batches = [...groupBySlot(keys).values()].flatMap(group => chunk(group, DELETE_BATCH));
+  const pipeline = node.pipeline();
+  for (const batch of batches) pipeline.del(...batch);
+  const results = (await pipeline.exec()) ?? [];
+  let deleted = 0;
+  for (const [index, batch] of batches.entries()) {
+    const [error, count] = results[index] ?? [new Error('No reply')];
+    deleted += error ? await cluster.del(...batch) : Number(count);
+  }
+  return deleted;
+}
+
+/** Groups keys by their Redis Cluster hash slot. */
+function groupBySlot(keys: string[]): Map<number, string[]> {
+  const groups = new Map<number, string[]>();
+  for (const key of keys) {
+    const slot = redisHashSlot(key);
+    const group = groups.get(slot);
+    if (group) group.push(key); else groups.set(slot, [key]);
+  }
+  return groups;
 }
 
 /** Runs bounded concurrent asynchronous work over an array. */

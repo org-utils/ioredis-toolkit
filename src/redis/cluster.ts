@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import type { Cluster } from 'ioredis';
+import type { RedisConnection } from './types.js';
 
 const SLOT_COUNT = 16_384;
 
@@ -43,4 +45,12 @@ export function assertSameSlot(keys: readonly string[]): void {
   for (const key of keys.slice(1)) {
     if (redisHashSlot(key) !== slot) throw new Error('Redis keys do not share a hash slot');
   }
+}
+
+/**
+ * Whether a connection is a Redis Cluster, by ioredis's own marker rather than `instanceof`: an application that resolves
+ * a second copy of ioredis hands over connections whose class is not the one this package imports.
+ */
+export function isCluster(connection: RedisConnection): connection is Cluster {
+  return (connection as { isCluster?: unknown }).isCluster === true;
 }
