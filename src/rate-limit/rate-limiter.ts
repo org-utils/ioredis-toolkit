@@ -1,27 +1,30 @@
-import { RedisClock, KeyStrategy, ScriptRegistry, type RedisClientWrapper } from '../redis/index.js';
+import { KeyStrategy, ScriptRegistry, type RedisClientWrapper } from '../redis/index.js';
 import { RateLimitError, type RateLimitConfig, type RateLimitResult } from './types.js';
 
 /**
- * Both scripts read authoritative time themselves, so a call is one round trip. KEYS[1] is the subject's key; each window's
- * counter is that key followed by the window number, and shares its hash slot through the subject's hash tag. Each returns
- * the window's count, the window's end and the server time, in whole seconds.
+ * Both scripts read authoritative time themselves, so a call is one round trip. KEYS[1] is the subject's key, the only key
+ * either touches: a hash holding the number of the window it counts (`window`) and that window's count (`count`). A stored
+ * window other than the current one counts as empty. Each returns the window's count, the window's end and the server
+ * time, in whole seconds.
  */
-const WINDOW = `local now=tonumber(redis.call('TIME')[1]); local w=tonumber(ARGV[1]); local bucket=math.floor(now/w); local key=KEYS[1]..':'..bucket; local windowEnd=(bucket+1)*w;`;
+const CURRENT_WINDOW = `local now=tonumber(redis.call('TIME')[1]); local w=tonumber(ARGV[1]); local bucket=tostring(math.floor(now/w)); local windowEnd=(bucket+1)*w; local current=redis.call('HGET',KEYS[1],'window')==bucket;`;
 const SCRIPT_SOURCES = {
-  consume: `${WINDOW} local c=redis.call('INCRBY',key,ARGV[2]); if redis.call('TTL',key)==-1 then redis.call('EXPIREAT',key,windowEnd) end; return {c,windowEnd,now}`,
-  check: `${WINDOW} return {tonumber(redis.call('GET',key) or '0'),windowEnd,now}`,
+  consume: `${CURRENT_WINDOW} local c; if current then c=redis.call('HINCRBY',KEYS[1],'count',ARGV[2]) else redis.call('HSET',KEYS[1],'window',bucket,'count',ARGV[2]); c=tonumber(ARGV[2]) end; if not current or redis.call('TTL',KEYS[1])==-1 then redis.call('EXPIREAT',KEYS[1],windowEnd) end; return {c,windowEnd,now}`,
+  check: `${CURRENT_WINDOW} local c=0; if current then c=tonumber(redis.call('HGET',KEYS[1],'count')) end; return {c,windowEnd,now}`,
 } as const;
 
 /** Fixed-window Redis rate limiter with atomic increment-and-expire behavior. */
 export class RedisRateLimiter {
-  private readonly clock: RedisClock;
   private readonly keys: KeyStrategy;
   private readonly scripts: ScriptRegistry<keyof typeof SCRIPT_SOURCES>;
   /** Creates a rate limiter bound to the shared Redis client. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: RateLimitConfig) { this.clock = new RedisClock(redis); this.keys = new KeyStrategy(config.namespace); this.scripts = new ScriptRegistry(redis, SCRIPT_SOURCES); }
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: RateLimitConfig) { this.keys = new KeyStrategy(config.namespace); this.scripts = new ScriptRegistry(redis, SCRIPT_SOURCES); }
 
-  /** Builds the physical key for a subject and the fixed window containing `serverSeconds`, which must be Redis server time to name the window the limiter uses. */
-  key(subject: string, serverSeconds: number): string { return `${this.subjectKey(subject)}:${Math.floor(serverSeconds / this.config.windowSeconds)}`; }
+  /** Builds the physical key that holds a subject's current fixed window. */
+  key(subject: string): string;
+  /** @deprecated `serverSeconds` has no effect: every window of a subject is counted under one key. Call `key(subject)`. */
+  key(subject: string, serverSeconds: number): string;
+  key(subject: string): string { return this.subjectKey(subject); }
 
   /** Consumes `cost` units from the subject's current fixed window. Denied requests still count against the window. */
   async consume(subject: string, cost = 1): Promise<RateLimitResult> {
@@ -39,11 +42,11 @@ export class RedisRateLimiter {
   }
 
   /** Resets the current fixed-window counter for a subject. */
-  async reset(subject: string): Promise<boolean> { return (await this.redis.del(this.key(subject, await this.clock.serverSeconds()))) > 0; }
+  async reset(subject: string): Promise<boolean> { return (await this.redis.del(this.key(subject))) > 0; }
 
   /**
-   * The key every window of a subject extends, with the subject as its hash tag. A subject that is empty or starts with `}`
-   * would make the tag empty, and Redis Cluster would then place each window apart from the key the script is routed by.
+   * The subject's key, with the subject as its hash tag as in earlier versions. A subject that is empty or starts with `}`
+   * is still rejected, as it was when each window had a key of its own that had to share the subject's hash slot.
    */
   private subjectKey(subject: string): string {
     if (subject === '' || subject.startsWith('}')) throw new RateLimitError('RATE_LIMIT_INPUT', 'Rate-limit subject must not be empty or start with "}"');

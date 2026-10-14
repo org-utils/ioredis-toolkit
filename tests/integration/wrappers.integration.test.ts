@@ -18,12 +18,10 @@ describeOnEachTopology('convenience wrappers against real Redis', redis => {
     expect(await redis.keysUnder(namespace)).toEqual([`${namespace}:a`]);
   });
 
-  it('writes a rate-limit window under the rate-limit namespace', async () => {
+  it('writes one rate-limit key per subject under the rate-limit namespace', async () => {
     const namespace = redis.newNamespace();
     await redis.connectClient({ rateLimit: { enabled: true, namespace } }).rateLimiter.consume('a');
-    const keys = await redis.keysUnder(namespace);
-    expect(keys).toHaveLength(1);
-    expect(keys[0]).toMatch(new RegExp(`^${namespace}:\\{a\\}:\\d+$`));
+    expect(await redis.keysUnder(namespace)).toEqual([`${namespace}:{a}`]);
   });
 
   it('writes a stream under the streams namespace', async () => {

@@ -60,4 +60,45 @@ describeOnEachTopology('rate-limit windows against real Redis', redis => {
     await limiter.consume('subject');
     expect(await redis.commandsFromClientsOf(namespace, () => limiter.consume('subject'))).toHaveLength(1);
   });
+
+  it('writes only the key it declares to the script', async () => {
+    const namespace = redis.newNamespace();
+    const limiter = limiterOn(namespace);
+    await limiter.consume('subject');
+    const [script] = await redis.commandsFromClientsOf(namespace, () => limiter.consume('subject'));
+    const declared = script!.slice(3, 3 + Number(script![2]));
+    expect(await redis.keysUnder(namespace)).toEqual(declared);
+    expect(declared).toEqual([limiter.key('subject')]);
+  });
+
+  it('starts a new count, with a TTL ending at the new window, when the stored window is not the current one', async () => {
+    const namespace = redis.newNamespace();
+    const limiter = limiterOn(namespace);
+    await limiter.consume('subject', 4);
+    const key = limiter.key('subject');
+    await redis.observer.hset(key, 'window', '1');
+    await redis.observer.persist(key);
+
+    const before = await serverSeconds();
+    expect(await limiter.consume('subject')).toMatchObject({ allowed: true, count: 1 });
+    expect(Number(await redis.observer.call('EXPIRETIME', key))).toBe(windowEndBetween(before, await serverSeconds()));
+  });
+
+  it('checks a stored window that is not the current one as empty', async () => {
+    const namespace = redis.newNamespace();
+    const limiter = limiterOn(namespace, 1);
+    await limiter.consume('subject');
+    await redis.observer.hset(limiter.key('subject'), 'window', '1');
+    expect(await limiter.check('subject')).toMatchObject({ allowed: true, count: 0 });
+  });
+
+  it('resets the current window in one round trip', async () => {
+    const namespace = redis.newNamespace();
+    const limiter = limiterOn(namespace, 1);
+    await limiter.consume('subject');
+    let reset = false;
+    expect(await redis.commandsFromClientsOf(namespace, async () => { reset = await limiter.reset('subject'); })).toHaveLength(1);
+    expect(reset).toBe(true);
+    expect(await limiter.consume('subject')).toMatchObject({ allowed: true, count: 1 });
+  });
 });
