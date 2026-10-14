@@ -115,6 +115,15 @@ for (const entry of entries) {
 - `blockMs`: optional Redis blocking read duration; defaults to the module's configured `blockMs` when omitted.
 - `id`: starting/continuation ID. Defaults to `>` for a group read, which delivers messages never delivered to the group, and to `$` for a plain read, which returns only entries added after the read starts. Pass the last ID you received to continue a plain read without missing entries.
 
+A group read with any `id` other than `>` reads the consumer's own pending entries instead. An entry deleted from the stream after it was delivered still comes back there, with its `id` and empty `fields`, so the consumer can acknowledge it and clear it from the pending list:
+
+```ts
+for (const entry of await redis.streams.read('orders', { group: 'workers', consumer: 'worker-1', id: '0' })) {
+  if (Object.keys(entry.fields).length > 0) await handle(entry);
+  await redis.streams.ack('orders', 'workers', entry.id);
+}
+```
+
 ## `ack(name, group, ...ids)`
 
 Acknowledges processed consumer-group messages and returns how many were acknowledged. At least one ID is required: called with none, the command is still sent and Redis rejects it.

@@ -21,7 +21,10 @@ export interface StreamsConfig extends ModuleConfigBase {
 export interface StreamEntry {
   /** Redis stream entry ID, for example `1750000000000-0`. */
   id: string;
-  /** Field/value pairs returned by Redis. */
+  /**
+   * Field/value pairs returned by Redis. Empty for a pending entry a consumer-group read re-delivers after it was deleted
+   * from the stream; its `id` can still be acknowledged.
+   */
   fields: Record<string, string>;
 }
 

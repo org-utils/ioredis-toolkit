@@ -57,6 +57,7 @@ export class RedisStreams {
 
 function parseStreamResult(result: unknown): StreamEntry[] {
   if (!Array.isArray(result) || result.length === 0) return [];
-  const stream = result[0] as [string, Array<[string, string[]]>]; if (!stream || !Array.isArray(stream[1])) return [];
-  return stream[1].map(([id, values]) => { const fields: Record<string, string> = {}; for (let i = 0; i < values.length; i += 2) { const key = values[i]; const value = values[i + 1]; if (key !== undefined && value !== undefined) fields[key] = value; } return { id, fields }; });
+  // A pending entry deleted since delivery comes back from XREADGROUP as `[id, nil]`.
+  const stream = result[0] as [string, Array<[string, string[] | null]>]; if (!stream || !Array.isArray(stream[1])) return [];
+  return stream[1].map(([id, values]) => { const fields: Record<string, string> = {}; for (let i = 0; i < (values ?? []).length; i += 2) { const key = values?.[i]; const value = values?.[i + 1]; if (key !== undefined && value !== undefined) fields[key] = value; } return { id, fields }; });
 }
