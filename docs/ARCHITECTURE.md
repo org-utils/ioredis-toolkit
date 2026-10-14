@@ -30,7 +30,9 @@ JTI is an internal session identifier and is not needed to validate the opaque t
 
 The user sorted-set index is checked during validation. The index can deny access but cannot grant access: the session record must independently pass all checks.
 
-Max-session enforcement (`create_session`) and revocation (`revoke()`, and rotation's `consume()`) all remove their affected member from the index eagerly. `create_session` additionally deletes the evicted session's own physical session and token-index keys — a bounded operation (at most one evicted session per `create()` call, given the per-user cap is enforced on every write), not the unbounded cluster-wide cleanup the "bounded maintenance" decision below rules out. Earlier revisions left the physical keys behind to expire on their own TTL; that left orphaned Redis memory and a token-index entry that stayed briefly resolvable past the point the session was actually evicted, so the index-only approach was deliberately narrowed to also delete the record it is evicting.
+Max-session enforcement (`create_session`) and revocation (`revoke()`, and rotation's `consume()`) all remove their affected member from the index eagerly. `create_session` additionally deletes the evicted session's record, which shares the user's slot, and returns the evicted token hashes. The repository then deletes their token locators, which live in other slots, through the kernel's cluster-aware delete as best-effort cleanup. An evicted session is unusable even if that cleanup fails, because its record is gone; a leftover locator resolves to a missing record, reads as not found, and is deleted then. The script never evicts the session it has just added, even when `createdAt` scores tie.
+
+The user's session set lives as long as its longest-lived session: `create_session` extends its TTL to at least the new session's, comparing in Lua rather than with `EXPIRE GT` so Redis 6 keeps working. A set written by an earlier version without a TTL is given one that outlives every record it holds. Stale members are still pruned lazily by `list()` and by eviction.
 
 ## Decision: rotation is two-phase
 

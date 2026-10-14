@@ -53,7 +53,7 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `touchInterval` | `number` | 60 | Minimum interval between rolling touch writes. |
 | `rolling` | `boolean` | `true` | Enables rolling idle expiration behavior. |
 | `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. The first `create()` for a user stores its version; see [`setSecurityVersion`](#setsecurityversionuserid-version). |
-| `maxSessionsPerUser` | `number` | 20 | Maximum configured indexed sessions per user. |
+| `maxSessionsPerUser` | `number` | 20 | Maximum indexed sessions per user. A `create()` over the limit evicts the oldest sessions, never the one it creates. `0` is unlimited. |
 | `maxMetadataBytes` | `number` | 8192 | Maximum metadata JSON size. |
 | `maxBatchSize` | `number` | 200 | Maximum bounded administrative batch. |
 | `maxConcurrency` | `number` | 8 | Maximum bounded cross-slot/application fan-out. |

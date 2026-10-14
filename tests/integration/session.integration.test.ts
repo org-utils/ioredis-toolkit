@@ -131,20 +131,64 @@ describeOnEachTopology('sessions against real Redis', redis => {
     expect(await redis.keysUnder(elsewhere)).toHaveLength(0);
   });
 
-  // On Cluster the creation script deletes the evicted token locator, which lives in another slot, so creation fails.
-  redis.itFailsOnClusterUntil('#53', /non local key/, 'leaves no key behind for a session evicted by maxSessionsPerUser', async () => {
-    const namespace = redis.newNamespace();
-    const sessions = sessionsIn(namespace, { maxSessionsPerUser: 1 });
-    const created = [await sessions.create({ userId: 'integration-user' }), await sessions.create({ userId: 'integration-user' })];
+  describe('maxSessionsPerUser and the user\'s session set', () => {
+    /** Resolves once Redis server time has moved into a later second, so the next session is strictly newer than the last. */
+    async function nextServerSecond(): Promise<void> {
+      const [start] = await redis.observer.time();
+      while ((await redis.observer.time())[0] === start) await new Promise(resolve => setTimeout(resolve, 20));
+    }
 
-    // Two sessions made in the same server second tie for oldest, so either may be the one evicted.
-    const valid = [];
-    for (const { token } of created) valid.push((await sessions.validate(token)).valid);
-    expect(valid.filter(Boolean)).toHaveLength(1);
-    const evicted = created[valid.indexOf(false)]!;
-    expect(await sessions.validate(evicted.token)).toEqual({ valid: false, reason: 'not_found' });
-    // The session id names the evicted record and its locator, and is its member in the user's index.
-    expect(await redis.storedUnder(namespace)).not.toContain(evicted.session.id);
+    it('evicts the oldest session to let a user over the limit sign in, and leaves none of its keys', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { maxSessionsPerUser: 20 });
+      const oldest = await sessions.create({ userId: 'integration-user' });
+      await nextServerSecond();
+      const newest = [];
+      for (let i = 0; i < 20; i += 1) newest.push(await sessions.create({ userId: 'integration-user' }));
+
+      expect(await sessions.validate(oldest.token)).toEqual({ valid: false, reason: 'not_found' });
+      for (const { token } of newest) expect((await sessions.validate(token)).valid).toBe(true);
+      // The session id names the record and the locator, and is the member in the user's session set.
+      expect(await redis.storedUnder(namespace)).not.toContain(oldest.session.id);
+    });
+
+    it('never evicts the session it is creating, even when it ties for oldest', async () => {
+      const sessions = sessionsIn(redis.newNamespace(), { maxSessionsPerUser: 1 });
+      // Sessions made in the same server second tie, so a run of pairs is all but sure to meet one.
+      for (let pair = 0; pair < 10; pair += 1) {
+        const userId = `integration-user-${pair}`;
+        const first = await sessions.create({ userId });
+        const second = await sessions.create({ userId });
+        expect(await sessions.validate(second.token)).toEqual({ valid: true, session: second.session });
+        expect(await sessions.validate(first.token)).toEqual({ valid: false, reason: 'not_found' });
+      }
+    });
+
+    it("keeps the user's session set alive as long as its longest-lived session", async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      await sessions.create({ userId: 'integration-user', ttl: 600 });
+      const setKey = await sessionSetKey(namespace);
+      // Expiries are whole seconds, so the set's may read a second under the session's.
+      expect(await redis.observer.ttl(setKey)).toBeGreaterThanOrEqual(599);
+
+      await sessions.create({ userId: 'integration-user', ttl: 60 });
+      expect(await redis.observer.ttl(setKey)).toBeGreaterThanOrEqual(598);
+    });
+
+    it("bounds a session set written without an expiry by the sessions it holds", async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      await sessions.create({ userId: 'integration-user', ttl: 600 });
+      // Earlier versions wrote the user's session set with no expiry.
+      const setKey = await sessionSetKey(namespace);
+      await redis.observer.persist(setKey);
+
+      await sessions.create({ userId: 'integration-user', ttl: 60 });
+      const ttl = await redis.observer.ttl(setKey);
+      expect(ttl).toBeGreaterThanOrEqual(598);
+      expect(ttl).toBeLessThanOrEqual(600);
+    });
   });
 
   it("keeps one user's keys in a single hash slot chosen by the user", async () => {

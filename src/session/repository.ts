@@ -30,18 +30,19 @@ export class SessionRepository {
    */
   async create(record: SessionRecord): Promise<void> {
     const ttl = Math.max(1, Math.ceil(record.expiresAt - record.createdAt));
-    // create_session appends the token hash of each session it evicts to these two keys.
-    const evictedSessionKey = this.o.keys.sessionByTag(this.o.keys.userTag(record.userId), '');
-    const evictedTokenIndexKey = this.o.keys.tokenIndex('');
     const result = await this.o.scripts.eval(
       'create_session',
       [this.o.keys.session(record.userId, record.id), this.o.keys.userIndex(record.userId), this.o.keys.securityVersion(record.userId)],
-      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser), evictedSessionKey, evictedTokenIndexKey,
+      [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser),
+        // The script deletes the record of each session it evicts, which shares the user's slot, by appending its token hash to this key.
+        this.o.keys.sessionByTag(this.o.keys.userTag(record.userId), ''),
         // A user with no stored security version takes the one their session is created with; a stored one is never overwritten.
         this.o.config.securityVersionEnabled && record.securityVersion !== null ? String(record.securityVersion) : '']
     );
-    const code = Number((result as unknown[])[0]);
-    if (code !== 1) throw new SessionStorageError('Session creation failed');
+    const [code, ...evicted] = result as unknown[];
+    if (Number(code) !== 1) throw new SessionStorageError('Session creation failed');
+    // An evicted session is unusable once its record is gone; its locators live in other slots and are only cleanup.
+    if (evicted.length) await this.safeDel(...evicted.map(tokenHash => this.o.keys.tokenIndex(String(tokenHash))));
     let indexed: string | null;
     try { indexed = await this.o.redis.set(this.o.keys.tokenIndex(record.id), this.o.keys.userTag(record.userId), 'EX', String(ttl), 'NX'); }
     catch (error) { throw new SessionStorageError('Session token index write failed', error); }
@@ -239,7 +240,7 @@ export class SessionRepository {
     } catch { /* derived cleanup is best effort */ }
   }
 
-  private async safeDel(key: string): Promise<void> { try { await this.o.redis.del(key); } catch { /* derived cleanup is best effort */ } }
+  private async safeDel(...keys: string[]): Promise<void> { try { await this.o.redis.del(...keys); } catch { /* derived cleanup is best effort */ } }
 }
 
 function isRecord(stored: Stored): stored is SessionRecord { return typeof stored !== 'string'; }

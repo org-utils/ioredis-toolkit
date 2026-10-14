@@ -28,7 +28,7 @@ DELETED (physical cleanup)
 
 | Operation | Source | Result | Atomicity | Retry |
 |---|---|---|---|---|
-| create | none | active | session + user index same-slot Lua; on eviction, also same-slot `DEL` of the evicted session/token-index keys; token locator is a separate, cross-slot secondary write | not idempotent |
+| create | none | active | session + user's session set same-slot Lua, which also extends the set's TTL and, on eviction, deletes the evicted record and returns its token hash; the new token locator, and the deletion of evicted ones, are separate cross-slot writes | not idempotent |
 | validate | active candidate | read-only decision | no transaction needed | safe read retry by application |
 | touch | active | active | same-key compare-and-set; leaves `version` unchanged | monotonic/idempotent effect |
 | update | active | active | same-key compare-and-set + version; a stale `expectedVersion` throws `SessionConflictError` | safe only with version semantics |
