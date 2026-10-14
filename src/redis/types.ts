@@ -131,6 +131,8 @@ export interface RedisPipeline {
   zrem(key: string, ...members: string[]): RedisPipeline;
   /** Queues ZSCORE. */
   zscore(key: string, member: string): RedisPipeline;
+  /** Queues ZCARD. */
+  zcard(key: string): RedisPipeline;
   /** Queues SET. */
   set(key: string, value: string, ...args: string[]): RedisPipeline;
   /** Queues EXPIRE. */

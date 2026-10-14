@@ -1,4 +1,4 @@
-import { expect } from 'vitest';
+import { expect, it } from 'vitest';
 import { SessionReplayError } from '../../src/index.js';
 import type { SessionManager } from '../../src/index.js';
 import { keyManager } from '../support/key-manager.js';
@@ -12,8 +12,7 @@ describeOnEachTopology('concurrent rotation', redis => {
       : redis.connectSessionManager({ enabled: true, namespace });
   }
 
-  // On Cluster a losing rotation can read the record before the winner consumes it and its index entry after, and is refused as invalid.
-  for (const storage of ['plain', 'encrypted'] as const) redis.itFailsOnClusterUntil('#60', /Session invalid .*to be an instance of SessionReplayError/, `lets exactly one of several simultaneous rotations of a credential succeed in ${storage} storage`, async () => {
+  it.each(['plain', 'encrypted'] as const)('lets exactly one of several simultaneous rotations of a credential succeed in %s storage', async storage => {
     const manager = sessionsIn(storage);
     const created = await manager.create({ userId: 'integration-user' });
 

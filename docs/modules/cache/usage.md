@@ -111,7 +111,7 @@ const seconds = await redis.cache.ttl('user:42');
 
 ### `delete(...keys)` / `del(key)`
 
-Deletes one or more entries. Cluster mode groups keys by Redis hash slot so a cross-slot `DEL` is not issued.
+Deletes one or more entries and returns how many existed. Cluster mode groups keys by Redis hash slot so a cross-slot `DEL` is not issued. Called with no keys, it returns `0` without contacting Redis.
 
 ```ts
 await redis.cache.delete('user:1', 'user:2', 'user:3');
@@ -120,7 +120,7 @@ await redis.cache.del('user:4');
 
 ### `clear(pattern?)`
 
-Scans the cache namespace and deletes matching entries. It never uses `KEYS` or `FLUSHALL`.
+Scans the cache namespace and deletes matching entries, returning how many it deleted. It never uses `KEYS` or `FLUSHALL`. Each page the scan returns is deleted before the next is fetched, in `DEL`s of at most 500 keys, grouped by hash slot on Cluster, so neither memory nor any one command grows with the number of matching keys.
 
 ```ts
 await redis.cache.clear();

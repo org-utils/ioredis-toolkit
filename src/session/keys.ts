@@ -15,9 +15,13 @@ export class SessionKeyStrategy {
   /** Builds the same session key when the precomputed user tag is already available. */
   sessionByTag(userTag: string, tokenHash: string): string { return this.keys.key('session', this.keys.hashTag(userTag), tokenHash); }
   /** Builds the per-user sorted-set index key. */
-  userIndex(userId: string): string { return this.keys.key('user-sessions', this.keys.hashTag(this.userTag(userId))); }
+  userIndex(userId: string): string { return this.userIndexByTag(this.userTag(userId)); }
+  /** Builds the same index key when the precomputed user tag is already available. */
+  userIndexByTag(userTag: string): string { return this.keys.key('user-sessions', this.keys.hashTag(userTag)); }
   /** Builds the per-user security-version key. */
-  securityVersion(userId: string): string { return this.keys.key('security-version', this.keys.hashTag(this.userTag(userId))); }
+  securityVersion(userId: string): string { return this.securityVersionByTag(this.userTag(userId)); }
+  /** Builds the same security-version key when the precomputed user tag is already available. */
+  securityVersionByTag(userTag: string): string { return this.keys.key('security-version', this.keys.hashTag(userTag)); }
   /** Builds the secondary token-hash locator key. */
   tokenIndex(tokenHash: string): string { return this.keys.key('token-index', tokenHash); }
   /** Builds a user-scoped SHA-256 idempotency key without storing the raw idempotency value. */

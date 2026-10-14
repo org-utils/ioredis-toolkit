@@ -53,7 +53,7 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `touchInterval` | `number` | 60 | Minimum interval between rolling touch writes. |
 | `rolling` | `boolean` | `true` | Enables rolling idle expiration behavior. |
 | `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. The first `create()` for a user stores its version; see [`setSecurityVersion`](#setsecurityversionuserid-version). |
-| `maxSessionsPerUser` | `number` | 20 | Maximum configured indexed sessions per user. |
+| `maxSessionsPerUser` | `number` | 20 | Maximum indexed sessions per user. A `create()` over the limit evicts the oldest sessions, never the one it creates. `0` is unlimited. |
 | `maxMetadataBytes` | `number` | 8192 | Maximum metadata JSON size. |
 | `maxBatchSize` | `number` | 200 | Maximum bounded administrative batch. |
 | `maxConcurrency` | `number` | 8 | Maximum bounded cross-slot/application fan-out. |
@@ -186,7 +186,7 @@ With `securityVersionEnabled`, `create()` requires `securityVersion`, and a sess
 
 ## `revokeAll(userId, limit?)`
 
-Revokes a bounded batch and returns `{ affected, remaining }` so large user indexes do not require loading every session into memory.
+Revokes a bounded batch and returns `{ affected, remaining }` so large user indexes do not require loading every session into memory. The revoked sessions are deleted outright, so their credentials then validate as `not_found`. It works the same on standalone Redis and on Cluster.
 
 ```ts
 let page = await sessions.revokeAll('user_123', 200);

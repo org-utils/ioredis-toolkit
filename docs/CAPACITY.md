@@ -30,4 +30,4 @@ The package defaults to 8 KiB session metadata, 200-item batches, concurrency 8,
 
 A per-user hash tag intentionally concentrates one user's session state on one slot. Extremely active users can become hot keys/slots; solving that requires a separate sharded-user design and would weaken the simple same-user atomicity model.
 
-Sessions evicted by `maxSessionsPerUser` now have their physical session and token-index keys deleted immediately at eviction time, rather than only being removed from the user index and left to expire on their own TTL. Under high per-user session churn this makes actual Redis memory usage track the configured cap more closely instead of transiently overshooting it by up to one full session TTL's worth of orphaned keys per evicted session.
+Sessions evicted by `maxSessionsPerUser` have their record deleted at eviction time, and their token locator deleted right after as best-effort cleanup, rather than being left to expire on their own TTL. Each user's session set expires with the longest-lived session in it, so a user who never returns costs no memory once their last session could no longer be alive.

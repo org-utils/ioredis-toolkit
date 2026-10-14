@@ -52,7 +52,7 @@ Override retention for a particular stream:
 await redis.streams.add('audit', { event: 'login' }, 1_000_000);
 ```
 
-Fields are strings because Redis Streams are field/value strings. Serialize structured values explicitly.
+Fields are strings because Redis Streams are field/value strings. Serialize structured values explicitly. An entry needs at least one field: `add()` with an empty field map throws `StreamsError` (code `STREAMS_INPUT`) without contacting Redis.
 
 ```ts
 await redis.streams.add('events', {
@@ -72,7 +72,11 @@ Using `$` starts at the end of the stream, while `0` allows existing entries to 
 
 ## `read(name, options?)`
 
-Reads normal stream entries or consumer-group entries. Every read now blocks for `blockMs` (per-call, or the configured default when omitted) — pass a small `blockMs` (or `0`, which blocks indefinitely per Redis semantics) deliberately rather than relying on an implicit non-blocking read.
+Reads normal stream entries or consumer-group entries. Every read blocks for `blockMs` (per-call, or the configured default when omitted); `0` waits indefinitely, per Redis semantics.
+
+A blocking read never runs on the client's shared connection. It leases a connection of its own from a pool of duplicates the Streams module grows on demand, and hands it back when the read returns. So a consumer waiting on a stream, even with `blockMs: 0`, never delays session checks, cache reads or any other command, and two concurrent reads on different streams wait side by side instead of queueing. Each concurrent read holds one connection, so the pool grows to the most reads in flight at once. Errors on these connections reach the client's `onError` hook with source `stream-reader`.
+
+`RedisClient.close()` disconnects every reader connection, so a read still waiting, however long its `blockMs`, rejects at once instead of holding shutdown up.
 
 Normal read:
 
@@ -140,7 +144,7 @@ Every error this module raises itself is a `StreamsError`, which extends the pac
 | Code | Thrown when |
 |---|---|
 | `STREAMS_CONFIGURATION` | the Streams configuration is invalid |
-| `STREAMS_INPUT` | `read()` is given a `group` without a `consumer` |
+| `STREAMS_INPUT` | `read()` is given a `group` without a `consumer`, or `add()` is given no fields |
 
 ## Overrides
 

@@ -1,6 +1,6 @@
 export const SCRIPT_SOURCES = {
   'create_session': `-- KEYS[1] session key
--- KEYS[2] user index
+-- KEYS[2] user's session set
 -- KEYS[3] the user's security version
 -- ARGV[1] serialized record
 -- ARGV[2] ttl seconds
@@ -8,26 +8,53 @@ export const SCRIPT_SOURCES = {
 -- ARGV[4] tokenHash
 -- ARGV[5] max sessions (0 = unlimited)
 -- ARGV[6] this user's session key, less the token hash
--- ARGV[7] token index key, less the token hash
--- ARGV[8] security version to store if the user has none, or '' to leave it alone
+-- ARGV[7] security version to store if the user has none, or '' to leave it alone
+-- Returns {1, evicted token hash...}, or {-1} when the session key is taken. Token locators live in other
+-- slots, so deleting an evicted session's locator is left to the caller.
 local created = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
 if not created then return {-1} end
-if ARGV[8] ~= '' then redis.call('SET', KEYS[3], ARGV[8], 'NX') end
+if ARGV[7] ~= '' then redis.call('SET', KEYS[3], ARGV[7], 'NX') end
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
-if tonumber(ARGV[5]) > 0 then
-  local count = redis.call('ZCARD', KEYS[2])
-  if count > tonumber(ARGV[5]) then
-    local excess = count - tonumber(ARGV[5])
-    local old = redis.call('ZRANGE', KEYS[2], 0, excess - 1)
-    for _, evictedHash in ipairs(old) do
-      redis.call('ZREM', KEYS[2], evictedHash)
-      redis.call('DEL', ARGV[6] .. evictedHash)
-      redis.call('DEL', ARGV[7] .. evictedHash)
-    end
-    return {1, excess}
+-- The set lives as long as its longest-lived session. Compared here rather than with EXPIRE GT, which Redis 6 lacks.
+local ttl = tonumber(ARGV[2]) * 1000
+local current = redis.call('PTTL', KEYS[2])
+if current == -1 then
+  -- Written by an earlier version without an expiry: it must outlive every session it already holds.
+  for _, member in ipairs(redis.call('ZRANGE', KEYS[2], 0, -1)) do
+    local remaining = redis.call('PTTL', ARGV[6] .. member)
+    if remaining == -1 then ttl = -1 break end
+    if remaining > ttl then ttl = remaining end
   end
 end
-return {1}
+if ttl ~= -1 and current < ttl then redis.call('PEXPIRE', KEYS[2], ttl) end
+local result = {1}
+local max = tonumber(ARGV[5])
+if max > 0 then
+  local excess = redis.call('ZCARD', KEYS[2]) - max
+  if excess > 0 then
+    -- One candidate more than needed, so the session just added is never the one evicted when createdAt ties.
+    for _, evictedHash in ipairs(redis.call('ZRANGE', KEYS[2], 0, excess)) do
+      if #result > excess then break end
+      if evictedHash ~= ARGV[4] then
+        redis.call('ZREM', KEYS[2], evictedHash)
+        redis.call('DEL', ARGV[6] .. evictedHash)
+        result[#result + 1] = evictedHash
+      end
+    end
+  end
+end
+return result
+`,
+  'read_session': `-- KEYS[1] session key
+-- KEYS[2] user's session set
+-- KEYS[3] the user's security version
+-- ARGV[1] tokenHash
+-- Returns {record or nil, 1 if the user's session set holds the token hash else 0, security version or nil, server seconds}.
+-- One read in the user's slot, so the record and its membership are seen at the same instant. TIME is Redis server time,
+-- authoritative under ADR-0002; the script writes nothing, so reading it here is allowed on every Redis version.
+local indexed = 0
+if redis.call('ZSCORE', KEYS[2], ARGV[1]) then indexed = 1 end
+return {redis.call('GET', KEYS[1]), indexed, redis.call('GET', KEYS[3]), redis.call('TIME')[1]}
 `,
   'replace_session': `-- KEYS[1] session key
 -- ARGV[1] SHA-1 of the stored value the replacement was worked out from

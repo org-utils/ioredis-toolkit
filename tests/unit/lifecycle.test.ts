@@ -34,6 +34,13 @@ describe('client lifecycle and error hook', () => {
     expect(heard).toEqual([{ source: 'subscriber' }]);
   });
 
+  it('delivers a stream-reader connection error to the hook with source stream-reader', async () => {
+    const heard: RedisErrorContext[] = [];
+    const { streams } = await unreachableClient({ lazyConnect: true, streams: { enabled: true } }, (_error, context) => { heard.push(context); });
+    await expect(streams.read('events', { blockMs: 1 })).rejects.toThrow();
+    expect(heard).toEqual([{ source: 'stream-reader' }]);
+  });
+
   it('keeps a connection error from crashing the process or reaching console.error when no hook is supplied', async () => {
     const client = await unreachableClient();
     await expect(client.ping()).rejects.toThrow();
