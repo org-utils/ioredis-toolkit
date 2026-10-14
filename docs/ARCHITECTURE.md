@@ -46,7 +46,7 @@ The package does not claim rotation idempotency. Network-timeout retry must be h
 
 Redis TIME is used for authentication/session timestamps to reduce application-clock ordering problems. TTLs remain Redis storage cleanup boundaries; application expiration fields remain authoritative for session validity.
 
-The same clock buckets rate-limit windows. The rate limiter, and the session service outside validation, read it through the kernel's `RedisClock`; validation reads `TIME` inside the same-slot script that reads the record, which is the same server time at no extra round trip; [ADR-0002](./adr/0002-redis-server-time-is-authoritative.md) records the rule and the one exception, local timing of a duration inside a single process.
+The same clock buckets rate-limit windows. The rate limiter, and the session service outside validation, read it through the kernel's `RedisClock`; validation reads `TIME` inside the same-slot script that reads the record, which is the same server time at no extra round trip; [ADR-0002](https://github.com/org-utils/ioredis-toolkit/blob/main/docs/adr/0002-redis-server-time-is-authoritative.md) records the rule and the one exception, local timing of a duration inside a single process.
 
 ## Decision: bounded maintenance
 

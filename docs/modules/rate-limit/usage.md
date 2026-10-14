@@ -96,7 +96,7 @@ await redis.rateLimiter.reset('user:42');
 
 ## Clock
 
-Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. `consume` and `check` read the server clock inside the script that does the work, so each is one round trip; `reset` needs no clock, since a subject's windows share one key. None of them accepts a caller-supplied time. On Redis Cluster the clock is that of the node holding the subject's hash slot, so the nodes' own clocks must be kept in sync. See [ADR-0002](../../adr/0002-redis-server-time-is-authoritative.md).
+Windows are bucketed by Redis server time, never the application server's clock, so every host places a subject in the same window however far its own clock has drifted. `consume` and `check` read the server clock inside the script that does the work, so each is one round trip; `reset` needs no clock, since a subject's windows share one key. None of them accepts a caller-supplied time. On Redis Cluster the clock is that of the node holding the subject's hash slot, so the nodes' own clocks must be kept in sync. See [ADR-0002](https://github.com/org-utils/ioredis-toolkit/blob/main/docs/adr/0002-redis-server-time-is-authoritative.md).
 
 ## Fixed-window behavior
 
