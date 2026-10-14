@@ -16,7 +16,7 @@ const clusterNode = z.union([z.string().min(1), port, z.object({ host: z.string(
 /** Runtime schema for the standalone Redis connection subset accepted by this package. */
 export const RedisConnectionConfigSchema = z.preprocess(
   (input) => {
-    if (input && typeof input === 'object' && !('mode' in (input as Record<string, unknown>))) {
+    if (input && typeof input === 'object' && (input as Record<string, unknown>).mode === undefined) {
       return { ...(input as Record<string, unknown>), mode: 'standalone' };
     }
     return input;

@@ -48,6 +48,10 @@ describe('client configuration validation', () => {
     await expectPackageError(() => createRedisClient(config), RedisConfigurationError, 'REDIS_CONFIGURATION');
   });
 
+  it('connects as standalone when mode is left undefined', async () => {
+    expect(() => createRedisClient({ mode: undefined, host: '127.0.0.1', port: 6379, lazyConnect: true })).not.toThrow();
+  });
+
   it('accepts Cluster startup nodes in every form ioredis takes', async () => {
     const port = await closedPort();
     expect(() => createRedisClient({ mode: 'cluster', nodes: [`127.0.0.1:${port}`, port, { port }], lazyConnect: true })).not.toThrow();

@@ -209,6 +209,20 @@ describeOnEachTopology('sessions against real Redis', redis => {
       expect(ttl).toBeLessThanOrEqual(TOMBSTONE_TTL);
     });
 
+    it('does not let a second revoke() keep the locator past the tombstone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.revoke(created.token);
+      // Longer than the second that expiries are set to, so a locator cut again by the second revoke would stand out.
+      await new Promise(resolve => setTimeout(resolve, 1_100));
+      await sessions.revoke(created.token);
+
+      const [record] = (await redis.keysUnder(namespace)).filter(key => key.includes(created.session.id) && key.includes('{'));
+      // The locator is cut just after the tombstone is written, so it may outlive it by that moment, never by a second.
+      expect(await redis.observer.pttl(await locatorOf(namespace, created.session.id))).toBeLessThan((await redis.observer.pttl(record!)) + 1_000);
+    });
+
     it('keeps reporting a rotated credential as consumed, and a revoked one as revoked, while the tombstone lasts', async () => {
       const sessions = sessionsIn(redis.newNamespace());
       const rotated = await sessions.create({ userId: 'integration-user' });

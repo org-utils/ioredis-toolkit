@@ -135,7 +135,9 @@ export class SessionRepository {
     const key = this.o.keys.session(record.userId, record.id);
     const { stored } = await this.load(key);
     if (stored === 'unreadable') throw new SessionStorageError('Session revocation failed');
-    if (stored !== 'missing' && stored.status !== 'revoked') {
+    // Only the call that writes the tombstone cuts the locator; a later one would let it outlive the tombstone.
+    const revokesNow = stored !== 'missing' && stored.status !== 'revoked';
+    if (revokesNow) {
       const revoked = this.o.serializer.serialize({ ...stored, status: 'revoked', version: stored.version + 1 });
       try {
         if (tombstoneTtl < 1) await this.o.redis.del(key);
@@ -144,7 +146,7 @@ export class SessionRepository {
     }
     try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
-    await this.expireLocator(record.id, tombstoneTtl);
+    if (revokesNow) await this.expireLocator(record.id, tombstoneTtl);
   }
 
   /** Removes the authoritative record and derived index entries. */
