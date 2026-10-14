@@ -97,7 +97,7 @@ export class RedisClient extends RedisClientWrapper {
   /** Returns the configured distributed-lock module, creating it lazily. Throws if the module is disabled. */
   get lock(): RedisLock {
     if (!this.moduleConfig.lock.enabled) throw new RedisConfigurationError('Lock module is disabled');
-    return this.lockModule ??= new RedisLock(this, this.moduleConfig.lock);
+    return this.lockModule ??= new RedisLock(this, this.moduleConfig.lock, this.report);
   }
   /** Returns the configured rate-limiter module, creating it lazily. Throws if the module is disabled. */
   get rateLimiter(): RedisRateLimiter {
@@ -139,7 +139,7 @@ export class RedisClient extends RedisClientWrapper {
   /** Merges or replaces the global cache configuration and returns this client for fluent chaining. */
   withCache(options: Partial<CacheConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('cache', parseCacheConfig(mode === 'merge' ? { ...this.moduleConfig.cache, ...options } : options)); this.cacheModule = new RedisCache(this, this.moduleConfig.cache); return this; }
   /** Merges or replaces the global lock configuration and returns this client for fluent chaining. */
-  withLock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('lock', parseLockConfig(mode === 'merge' ? { ...this.moduleConfig.lock, ...options } : options)); this.lockModule = new RedisLock(this, this.moduleConfig.lock); return this; }
+  withLock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('lock', parseLockConfig(mode === 'merge' ? { ...this.moduleConfig.lock, ...options } : options)); this.lockModule = new RedisLock(this, this.moduleConfig.lock, this.report); return this; }
   /** Alias for withLock for codebases that prefer lowercase module naming. */
   withlock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { return this.withLock(options, mode); }
   /** Merges or replaces the global rate-limit configuration and returns this client for fluent chaining. */

@@ -43,6 +43,9 @@ describe('error codes', () => {
 
     { code: 'LOCK_CONFIGURATION', type: LockError, condition: 'an invalid lock configuration', operation: () => parseLockConfig({ defaultTtl: 500, maxTtl: 300 }) },
     { code: 'LOCK_INPUT', type: LockError, condition: 'a lock TTL that is not positive', operation: () => offlineClient({ lock: { enabled: true } }).lock.acquire('name', 0) },
+    // An unreachable client, so a TTL that reached Redis would fail with a connection error instead.
+    ...[Number.NaN, Number.POSITIVE_INFINITY, 0.0001].map(ttl => ({ code: 'LOCK_INPUT', type: LockError, condition: `a lock TTL of ${ttl}`, operation: async () => (await unreachableClient({ lock: { enabled: true } })).lock.acquire('name', ttl) })),
+    { code: 'LOCK_INPUT', type: LockError, condition: 'an extend() TTL that is not a whole number of milliseconds', operation: async () => (await unreachableClient({ lock: { enabled: true } })).lock.extend('name', 'token', 1.0005) },
     { code: 'LOCK_LIMIT', type: LockError, condition: 'a lock TTL longer than maxTtl', operation: () => offlineClient({ lock: { enabled: true, maxTtl: 300 } }).lock.acquire('name', 301) },
 
     { code: 'RATE_LIMIT_CONFIGURATION', type: RateLimitError, condition: 'an invalid rate-limit configuration', operation: () => parseRateLimitConfig({ windowSeconds: 0 }) },

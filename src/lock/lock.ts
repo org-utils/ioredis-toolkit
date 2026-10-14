@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { KeyStrategy, ScriptRegistry, type RedisClientWrapper } from '../redis/index.js';
+import { KeyStrategy, ScriptRegistry, containedReporter, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
 import { LockError, type LockAcquireResult, type LockConfig } from './types.js';
 
 const SCRIPT_SOURCES = {
@@ -11,17 +11,23 @@ const SCRIPT_SOURCES = {
 export class RedisLock {
   private readonly keys: KeyStrategy;
   private readonly scripts: ScriptRegistry<keyof typeof SCRIPT_SOURCES>;
-  /** Creates a lock bound to the shared Redis client. The client must be shared with the other modules. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: LockConfig) { this.keys = new KeyStrategy(config.namespace); this.scripts = new ScriptRegistry(redis, SCRIPT_SOURCES); }
+  /**
+   * Creates a lock bound to the shared Redis client. The client must be shared with the other modules. A release that
+   * fails inside {@link using} goes to `report`, since the callback's outcome is what `using()` returns.
+   */
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: LockConfig, private readonly report: ErrorReporter<'lock-release'> = containedReporter()) {
+    this.keys = new KeyStrategy(config.namespace);
+    this.scripts = new ScriptRegistry(redis, SCRIPT_SOURCES);
+  }
 
   /** Builds the physical key for a logical lock name. */
   key(name: string): string { return this.keys.key(name); }
 
   /** Attempts to acquire a lock and returns a cryptographically random ownership token. */
   async acquire(name: string, ttl = this.config.defaultTtl): Promise<LockAcquireResult> {
-    this.assertTtl(ttl);
+    const milliseconds = this.leaseMilliseconds(ttl);
     const token = randomBytes(32).toString('base64url');
-    const result = await this.redis.set(this.key(name), token, 'PX', String(ttl * 1000), 'NX');
+    const result = await this.redis.set(this.key(name), token, 'PX', String(milliseconds), 'NX');
     return { acquired: result === 'OK', token };
   }
 
@@ -30,20 +36,42 @@ export class RedisLock {
 
   /** Extends a lock only when the supplied ownership token still owns it. */
   async extend(name: string, token: string, ttl = this.config.defaultTtl): Promise<boolean> {
-    this.assertTtl(ttl);
-    return Number(await this.scripts.eval('extend', [this.key(name)], [token, String(ttl * 1000)])) === 1;
+    const milliseconds = this.leaseMilliseconds(ttl);
+    return Number(await this.scripts.eval('extend', [this.key(name)], [token, String(milliseconds)])) === 1;
   }
 
-  /** Executes a function while holding a lock, releasing it in a finally block. */
+  /**
+   * Executes a function while holding a lock, and releases it afterwards. Resolves with the callback's result, or rejects
+   * with its error, whatever the release does: a release that fails is reported to the error hook with source
+   * `lock-release` instead, and the lock then lapses at the end of its TTL.
+   */
   async using<T>(name: string, fn: (token: string) => Promise<T>, ttl = this.config.defaultTtl): Promise<T> {
     const acquired = await this.acquire(name, ttl);
     if (!acquired.acquired) throw new LockError('LOCK_HELD', `Lock is already held: ${name}`);
-    try { return await fn(acquired.token); } finally { await this.release(name, acquired.token); }
+    let result: T;
+    try { result = await fn(acquired.token); }
+    catch (error) { await this.releaseReporting(name, acquired.token); throw error; }
+    await this.releaseReporting(name, acquired.token);
+    return result;
   }
 
-  /** Rejects a lease that is not positive or is longer than the configured maximum. */
-  private assertTtl(ttl: number): void {
-    if (ttl <= 0) throw new LockError('LOCK_INPUT', 'Lock TTL must be positive');
+  /** Releases a lock, reporting a failure rather than throwing it. */
+  private async releaseReporting(name: string, token: string): Promise<void> {
+    try { await this.release(name, token); }
+    catch (error) { this.report(error, { source: 'lock-release' }); }
+  }
+
+  /**
+   * The lease in whole milliseconds. Rejects one that is not a finite positive number, is not a whole number of
+   * milliseconds, or is longer than the configured maximum, before anything is sent.
+   */
+  private leaseMilliseconds(ttl: number): number {
+    if (!Number.isFinite(ttl) || ttl <= 0) throw new LockError('LOCK_INPUT', 'Lock TTL must be a finite positive number of seconds');
+    const exact = ttl * 1000;
+    const milliseconds = Math.round(exact);
+    // Within float error of a whole millisecond: 1.001 seconds is 1000.9999999999999 milliseconds once multiplied.
+    if (milliseconds < 1 || Math.abs(exact - milliseconds) > 1e-6) throw new LockError('LOCK_INPUT', 'Lock TTL must be a whole number of milliseconds');
     if (ttl > this.config.maxTtl) throw new LockError('LOCK_LIMIT', `Lock TTL must not exceed maxTtl (${this.config.maxTtl})`);
+    return milliseconds;
   }
 }

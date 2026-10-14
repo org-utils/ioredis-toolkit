@@ -80,7 +80,9 @@ if (lock.acquired) {
 
 ### `using(name, fn, ttl?)`
 
-Acquires a lock, executes the callback, and releases the lock in `finally`. The callback receives the ownership token so it can extend the lease.
+Acquires a lock, executes the callback, and releases the lock afterwards. The callback receives the ownership token so it can extend the lease.
+
+`using()` resolves with the callback's result, or rejects with the callback's error, even if releasing the lock fails. A failed release is reported to the client's `onError` hook with source `lock-release` instead of replacing the outcome, and the lock then lapses at the end of its TTL.
 
 ```ts
 const result = await redis.lock.using('report:daily', async token => {
@@ -104,7 +106,7 @@ Every error this module raises itself is a `LockError`, which extends the packag
 | Code | Thrown when |
 |---|---|
 | `LOCK_CONFIGURATION` | the lock configuration is invalid |
-| `LOCK_INPUT` | `acquire()` or `extend()` is given a TTL that is not positive |
+| `LOCK_INPUT` | `acquire()` or `extend()` is given a TTL that is not a finite positive number (including `NaN`), or is not a whole number of milliseconds (such as `0.0001`), checked before anything is sent |
 | `LOCK_LIMIT` | `acquire()` or `extend()` is given a TTL longer than `maxTtl` |
 | `LOCK_HELD` | `using()` finds the lock already held |
 

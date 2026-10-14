@@ -1,6 +1,7 @@
 import { Cluster } from 'ioredis';
 import { describe, expect, it } from 'vitest';
 import { CacheError, LockError, RedisClient } from '../../src/index.js';
+import type { RedisErrorContext } from '../../src/index.js';
 import { expectPackageError } from '../support/errors.js';
 import { describeOnEachTopology } from '../support/redis.js';
 
@@ -44,6 +45,29 @@ describeOnEachTopology('convenience wrappers against real Redis', redis => {
     const { lock } = redis.connectClient({ lock: { enabled: true, namespace: redis.newNamespace() } });
     await lock.acquire('name');
     await expectPackageError(() => lock.using('name', async () => undefined), LockError, 'LOCK_HELD');
+  });
+
+  describe('lock.using()', () => {
+    /** A lock on a client whose error hook records the source of what it hears. */
+    function reportingLock() {
+      const heard: Array<{ error: unknown; context: RedisErrorContext }> = [];
+      const client = redis.connectClient({ lock: { enabled: true, namespace: redis.newNamespace() } }, { onError: (error, context) => { heard.push({ error, context }); } });
+      return { client, heard };
+    }
+
+    it("returns the callback's result when releasing the lock fails, and reports the release failure", async () => {
+      const { client, heard } = reportingLock();
+      // Closing the client inside the callback is what makes the release fail.
+      const result = await client.lock.using('name', async () => { await client.close(); return 'done'; });
+      expect(result).toBe('done');
+      expect(heard.filter(({ context }) => context.source === 'lock-release')).toEqual([{ error: expect.any(Error), context: { source: 'lock-release' } }]);
+    });
+
+    it("rethrows the callback's error when the release fails as well", async () => {
+      const { client } = reportingLock();
+      const failure = new Error('callback failed');
+      await expect(client.lock.using('name', async () => { await client.close(); throw failure; })).rejects.toBe(failure);
+    });
   });
 
   describe('cache.clear() and cache.delete()', () => {
