@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.3
+
+### Patch Changes
+
+- 2dee613: Rotating or revoking a session no longer leaves its token locator alive for the rest of the original session lifetime. The token locator is the key that maps a credential to its user. Its TTL is now cut to that of the session's tombstone: the rest of the session's lifetime, capped at 300 seconds. While the tombstone lasts, a replayed credential is still reported as `consumed` and a revoked one as `revoked`. After that, both report `not_found` and neither key remains. Frequent rotation no longer leaves thousands of dead keys per active user.
+- c6c3d81: Rate-limit windows now always expire, and the times the limiter reports are exact.
+  
+  - A window's counter expires when the window ends, whatever the cost of its first request. Before, a window whose first request cost more than 1 never expired.
+  - `resetAt` is the window's end, `(window + 1) × windowSeconds` in Redis server time. `retryAfterSeconds` is the time from now until that end when a request is denied, and `0` otherwise. Before, both could overstate the wait by up to 2×. `check()` reports the same boundaries as `consume()`.
+  - `consume()` and `check()` read Redis server time inside their script, so each is one round trip instead of two (three for `check()`).
+  
+  **The counter key layout changes.** The subject is now the key's Redis Cluster hash tag: `rate-limit:{user:42}:2` instead of `rate-limit:user:42:2`. All of a subject's windows share one hash slot, which is what lets one script read the clock and pick the window on Cluster. `key(subject, serverSeconds)` returns the new form. Windows in progress during an upgrade start again from zero once, and counters written by earlier versions are not read again. A subject that is empty or starts with `}` would leave the hash tag empty, so it now throws `RateLimitError` with `RATE_LIMIT_INPUT`.
+  
+  The rate-limit docs now state that requests near a window boundary can briefly reach up to twice the limit, and that denied requests still count against the window.
+- 2e49d3c: Enabling `securityVersionEnabled` no longer rejects every session until the application has written a security version for each user. When no version is stored for a user, `create()` stores the `securityVersion` it is given, set only if absent, in the same step that writes the session. `create()` never overwrites a stored version, so sessions from before a `setSecurityVersion()` bump stay invalid. Validation still fails closed whenever the stored version is missing. The sessions docs describe the behaviour.
+- f9726c8: The session `cookie` configuration is now used. `SessionManager` gains `cookie(token, session)`, which resolves to a `Set-Cookie` value with the configured name, domain, path, `HttpOnly`, `Secure` and `SameSite` attributes, and `deletionCookie()`, which returns the expired cookie that removes it. Unless `cookie.maxAge` is set, `Max-Age` is what the session has left before its hard expiry, measured in Redis server time.
+  
+  `serializeCookie()` now rejects a `Domain` or `Path` containing `;`, a control character or whitespace by throwing `SessionInputError`, so an input-derived value can no longer end the attribute early or inject attributes of its own.
+  
+  `circuitBreaker` is deprecated and has no effect. The package has never had a circuit breaker. The setting is still accepted, so existing configuration keeps parsing, and is marked `@deprecated` in the type declarations. It will be removed in the next major version.
+- 4577626: **`touch()` no longer increments a session's `version`.** `version` now counts only the changes an application can see: `update()` and status changes such as rotation and revocation. Code that expected a touch to bump `version` must change. In return, a background touch no longer makes an `update()` that carries the version read before it fail.
+  
+  A version mismatch in `update()` now always throws `SessionConflictError` (code `SESSION_CONFLICT`). Before, a writer that lost the race at the store got `SessionStorageError` instead. The patch is applied to the record as stored when it is written, so a touch that landed in between is kept.
+  
+  `update()` now follows the same rules as `create()` for client details. `ipAddress`, `userAgent` and `deviceId` are stored only when `storeIpAddress`, `storeUserAgent` and `storeDeviceId` are on, and are otherwise ignored. They are capped at 128, 1024 and 256 characters, and a longer value throws `SessionInvalidError`. Before, `update()` stored them whatever the flags said, with no length limit.
+- 2cc6e40: A session record that cannot be decoded is now reported and never deleted. Before, if the key manager briefly lacked an old key version, or encryption was switched off by mistake, every session that failed to decode was deleted the next time it was validated or listed. That amounted to a mass logout. Now validating such a session throws `SessionSerializationError` and leaves the record exactly as stored, so restoring the configuration makes the session valid again. `list()` leaves undecodable records out of the page without removing them from the user's session set. It still removes members whose record is missing.
+  
+  `list()` also leaves out sessions past any of their expiries (hard, idle or absolute), measured in Redis server time, so it shows only sessions that can still authenticate. Before, idle-expired sessions were listed.
+- 5a01294: `createRedisClient()` now validates the connection configuration before it connects, with `parseRedisConnectionConfig`. A mistyped `mode` throws `RedisConfigurationError` instead of silently connecting as standalone. Cluster startup nodes are accepted in every form ioredis takes: `host:port` strings, bare ports, and addresses.
+  
+  The client facade now rejects, with `RedisConfigurationError`, any configuration where two enabled modules share a namespace, or where one namespace is a colon-delimited prefix of another (`app` and `app:cache`, but not `app` and `application`). The check runs when the client is created, before it connects, and again on every `with*()` call. A `with*()` call that would cause a collision throws and leaves the previous configuration in effect. Disabled modules are not checked.
+  
+  **This can make a previously accepted configuration fail at startup.** For example, a cache sharing its namespace with sessions used to be accepted, and `cache.clear()` would then delete every session. Give each enabled module a namespace of its own.
+
 ## 1.0.2
 
 ### Patch Changes
