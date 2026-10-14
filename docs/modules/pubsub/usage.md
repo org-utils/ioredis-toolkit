@@ -27,7 +27,7 @@ const redis = createRedisClient({
 
 ## Resilience
 
-The dedicated subscriber connection has a default `'error'` listener attached automatically, so a connection drop, auth failure, or network error on it can no longer crash the process with an uncaught exception. Attach your own listener on the connection if you need alerting/observability beyond that default.
+The dedicated subscriber connection has a default `'error'` listener attached automatically, so a connection drop, auth failure, or network error on it can no longer crash the process with an uncaught exception. The listener forwards each error to the client's `onError` hook with source `subscriber`; see the README's "Shutdown and error visibility".
 
 A malformed (non-JSON) message delivered on a subscribed channel — for example, published by a non-conforming external client — is silently dropped instead of throwing inside ioredis's `message` event and crashing the process. Handlers are only invoked for messages that parse successfully.
 
@@ -85,11 +85,11 @@ redis.pubsub.fullChannel('orders.created');
 
 ## `close()`
 
-Closes the dedicated subscriber connection. Call it during application shutdown.
+Closes the dedicated subscriber connection. It is idempotent. At application shutdown, prefer the client's own `close()`, which closes this connection together with every other one the client opened.
 
 ```ts
 process.on('SIGTERM', async () => {
-  await redis.pubsub.close();
+  await redis.close();
   process.exit(0);
 });
 ```

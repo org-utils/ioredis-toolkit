@@ -41,6 +41,25 @@ await redis.streams.add('orders', { orderId: '42', type: 'created' });
 const session = await redis.sessions.create({ userId: '42' });
 ```
 
+## Shutdown and error visibility
+
+`close()` closes every connection the client opened: the shared connection, and the Pub/Sub subscriber connection if Pub/Sub was used. A connection that is up is quit, so commands already sent complete; one that is not is disconnected. It is idempotent and safe to call whichever modules were used, so it can sit in a generic shutdown hook.
+
+Errors the client cannot raise to a caller, such as a dropped connection, go to the `onError` hook passed when the client is created. The context names the source: `connection` for the shared connection, `subscriber` for the Pub/Sub subscriber connection.
+
+```ts
+const redis = createRedisClient(config, {
+  onError: (error, { source, channel }) => logger.warn({ err: error, source, channel }, 'redis error'),
+});
+
+process.on('SIGTERM', async () => {
+  await redis.close();
+  process.exit(0);
+});
+```
+
+Every connection the client opens always has an `'error'` listener of its own, so without a hook those errors are dropped rather than crashing the process. A hook that throws, or returns a promise that rejects, is contained.
+
 ## Fluent module overrides
 
 Each module can inherit the global configuration and override selected values:

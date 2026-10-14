@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createSessionManagerFromRedis,
   SessionConflictError, SessionExpiredError, SessionNotFoundError, SessionReplayError, SessionRevokedError, SessionRotationError, SessionSerializationError, SessionStorageError,
 } from '../../src/index.js';
 import type { KeyManager, SessionConfig, SessionManager, SessionMetrics } from '../../src/index.js';
@@ -33,7 +32,7 @@ describeOnEachTopology('sessions against real Redis', redis => {
     const lifetime = { rolling: true, touchInterval: 0, ttl: 600, idleTimeout: 300, absoluteTimeout: 600 };
     const manager = storage === 'encrypted'
       ? sessionsIn(namespace, { ...lifetime, encryption: { enabled: true } }, keyManager())
-      : createSessionManagerFromRedis(redis.connectionConfig(), { enabled: true, namespace, ...lifetime }).manager;
+      : redis.connectSessionManager({ enabled: true, namespace, ...lifetime });
     /** Whatever wrote a record last, encrypted storage must not leave its user readable in Redis. */
     async function expectStoredAsConfigured(): Promise<void> {
       const stored = await redis.storedUnder(namespace);

@@ -1,5 +1,5 @@
 import { Cluster, type Redis } from 'ioredis';
-import { KeyStrategy, type RedisClientWrapper } from '../redis/index.js';
+import { KeyStrategy, closeConnection, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
 import { PubSubError, type PubSubConfig, type PubSubMessage, type Subscription } from './types.js';
 
 /** JSON Pub/Sub abstraction using a dedicated subscriber connection. */
@@ -7,11 +7,11 @@ export class RedisPubSub {
   private readonly subscriber: Redis | Cluster;
   private readonly handlers = new Map<string, Set<(message: string) => void>>();
   private readonly keys: KeyStrategy;
-  /** Creates a Pub/Sub module using the same connection configuration as the shared client. */
-  constructor(private readonly redis: RedisClientWrapper, private readonly config: PubSubConfig) {
+  /** Creates a Pub/Sub module on a duplicate of the shared connection, whose errors go to `report` and never crash the process. */
+  constructor(private readonly redis: RedisClientWrapper, private readonly config: PubSubConfig, report: ErrorReporter<'subscriber'>) {
     this.keys = new KeyStrategy(config.namespace);
     this.subscriber = redis.duplicateConnection();
-    this.subscriber.on('error', () => { /* prevents unhandled 'error' event crashes; add your own listener on this instance for observability */ });
+    reportConnectionErrors(this.subscriber, report, 'subscriber');
     this.subscriber.on('message', (channel: string, message: string) => this.handlers.get(channel)?.forEach(handler => handler(message)));
   }
   /** Publishes a JSON value to a namespaced channel and returns subscriber count. */
@@ -36,8 +36,8 @@ export class RedisPubSub {
     if (!existing) await this.subscriber.subscribe(full);
     return { channel, unsubscribe: async () => { set.delete(wrapped); if (set.size === 0) { this.handlers.delete(full); await this.subscriber.unsubscribe(full); } } };
   }
-  /** Closes the dedicated subscriber connection. */
-  async close(): Promise<void> { await this.subscriber.quit(); this.handlers.clear(); }
+  /** Closes the dedicated subscriber connection. Idempotent. */
+  async close(): Promise<void> { await closeConnection(this.subscriber); this.handlers.clear(); }
   /** Returns the physical namespaced channel. */
   fullChannel(channel: string): string { return this.keys.key(channel); }
 }
