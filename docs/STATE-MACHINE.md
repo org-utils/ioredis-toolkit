@@ -29,8 +29,8 @@ DELETED (physical cleanup)
 | Operation | Source | Result | Atomicity | Retry |
 |---|---|---|---|---|
 | create | none | active | session + user's session set same-slot Lua, which also extends the set's TTL and, on eviction, deletes the evicted record and returns its token hash; the new token locator, and the deletion of evicted ones, are separate cross-slot writes | not idempotent |
-| validate | active candidate | read-only decision | no transaction needed | safe read retry by application |
-| touch | active | active | same-key compare-and-set; leaves `version` unchanged | monotonic/idempotent effect |
+| validate | active candidate | read-only decision | two round trips: the token locator, then one same-slot read-only Lua of the record, its membership in the user's session set, the user's security version and Redis `TIME`, all seen at one instant | safe read retry by application |
+| touch | active | active | same-key compare-and-set, worked out from the record and time validation read; leaves `version` unchanged | monotonic/idempotent effect |
 | update | active | active | same-key compare-and-set + version; a stale `expectedVersion` throws `SessionConflictError` | safe only with version semantics |
 | rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
 | revoke | active/revoked | revoked/deleted | an unconditional same-key write marks the record; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted) | idempotent |
@@ -39,7 +39,7 @@ DELETED (physical cleanup)
 
 ### Compare-and-set
 
-`touch`, `update` and the consume step of `rotate` change a stored record the same way: the application reads the record, works out its replacement, and a script writes the replacement only if the stored value is still the one that was read. Redis never has to decode the record, so an encrypted record stays encrypted and is re-encrypted under the current key on every write.
+`touch`, `update` and the consume step of `rotate` change a stored record the same way: the application reads the record (`touch` uses the read its validation made), works out its replacement, and a script writes the replacement only if the stored value is still the one that was read. Redis never has to decode the record, so an encrypted record stays encrypted and is re-encrypted under the current key on every write.
 
 A write that finds the stored value changed works its answer out again from the new value. An operation that loses 32 times in a row fails with `SessionStorageError` and leaves the record as it found it.
 

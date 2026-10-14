@@ -28,7 +28,7 @@ JTI is an internal session identifier and is not needed to validate the opaque t
 
 ## Decision: session index as a negative authorization guard
 
-The user sorted-set index is checked during validation. The index can deny access but cannot grant access: the session record must independently pass all checks.
+The user sorted-set index is checked during validation. The index can deny access but cannot grant access: the session record must independently pass all checks. The record and its membership are read in one script in the user's slot, so validation never sees a session as it stood before a concurrent rotation or revocation alongside its membership as it stood after.
 
 Max-session enforcement (`create_session`) and revocation (`revoke()`, and rotation's `consume()`) all remove their affected member from the index eagerly. `create_session` additionally deletes the evicted session's record, which shares the user's slot, and returns the evicted token hashes. The repository then deletes their token locators, which live in other slots, through the kernel's cluster-aware delete as best-effort cleanup. An evicted session is unusable even if that cleanup fails, because its record is gone; a leftover locator resolves to a missing record, reads as not found, and is deleted then. The script never evicts the session it has just added, even when `createdAt` scores tie.
 
@@ -44,7 +44,7 @@ The package does not claim rotation idempotency. Network-timeout retry must be h
 
 Redis TIME is used for authentication/session timestamps to reduce application-clock ordering problems. TTLs remain Redis storage cleanup boundaries; application expiration fields remain authoritative for session validity.
 
-The same clock buckets rate-limit windows. The session service and the rate limiter read it through the kernel's `RedisClock`; [ADR-0002](./adr/0002-redis-server-time-is-authoritative.md) records the rule and the one exception, local timing of a duration inside a single process.
+The same clock buckets rate-limit windows. The rate limiter, and the session service outside validation, read it through the kernel's `RedisClock`; validation reads `TIME` inside the same-slot script that reads the record, which is the same server time at no extra round trip; [ADR-0002](./adr/0002-redis-server-time-is-authoritative.md) records the rule and the one exception, local timing of a duration inside a single process.
 
 ## Decision: bounded maintenance
 

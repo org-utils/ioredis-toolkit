@@ -2,9 +2,9 @@ import type { SessionConfig } from './config.js';
 import { SessionConflictError, SessionExpiredError, SessionInvalidError, SessionLimitError, SessionNotFoundError, SessionReplayError, SessionRotationError, SessionStorageError, SessionRevokedError } from './errors.js';
 import { serializeCookie, serializeDeletionCookie, type CookieOptions } from './cookie.js';
 import { NoopMetrics } from './metrics.js';
-import type { SessionRepository } from './repository.js';
+import type { SessionRead, SessionRepository } from './repository.js';
 import type { SessionTokenManager } from './token.js';
-import type { CreateSessionInput, CreatedSession, RotationResult, SessionMetrics, SessionPatch, SessionRecord, ValidationResult } from './types.js';
+import type { CreateSessionInput, CreatedSession, InvalidReason, RotationResult, SessionMetrics, SessionPatch, SessionRecord, ValidationResult } from './types.js';
 import { RedisClock, type RedisClientWrapper } from '../redis/index.js';
 
 /** The optional client details a session may record, with the flag that lets each be stored and the longest value accepted for it. */
@@ -13,6 +13,9 @@ const CLIENT_FIELDS = [
   { field: 'ipAddress', flag: 'storeIpAddress', maxLength: 128 },
   { field: 'userAgent', flag: 'storeUserAgent', maxLength: 1024 },
 ] as const;
+
+/** A validation's outcome, carrying on success the read it was decided on. */
+type Validated = { valid: true; read: SessionRead } | { valid: false; reason: InvalidReason };
 
 /** Dependencies required by {@link SessionService}. */
 export interface SessionServiceOptions { repository: SessionRepository; tokens: SessionTokenManager; redis: RedisClientWrapper; config: SessionConfig; metrics?: SessionMetrics; }
@@ -58,28 +61,31 @@ export class SessionService {
 
   /** Validates an opaque credential and returns a discriminated authentication result. */
   async validate(token: string): Promise<ValidationResult> {
+    const result = await this.validateRead(token);
+    return result.valid ? { valid: true, session: result.read.record } : result;
+  }
+
+  /** Validates a credential and reports the outcome, keeping the read a valid one was decided on for the write that may follow. */
+  private async validateRead(token: string): Promise<Validated> {
     const result = await this.validateInternal(token);
     this.metrics.increment('session.validate', 1, result.valid ? { result: 'valid' } : { result: 'invalid', reason: result.reason });
     return result;
   }
 
-  private async validateInternal(token: string): Promise<ValidationResult> {
+  /** Decides on one atomic read of the session, its set membership, the security version and server time: two round trips. */
+  private async validateInternal(token: string): Promise<Validated> {
     if (!this.o.tokens.validateFormat(token)) return { valid: false, reason: 'invalid' };
-    const tokenHash = this.o.tokens.hash(token);
-    const session = await this.o.repository.resolve(tokenHash);
-    if (!session) return { valid: false, reason: 'not_found' };
-    const now = await this.now();
+    const read = await this.o.repository.read(this.o.tokens.hash(token));
+    if (!read) return { valid: false, reason: 'not_found' };
+    const { record: session, serverSeconds: now } = read;
     if (session.status === 'revoked') return { valid: false, reason: 'revoked' };
     if (session.status === 'consumed') return { valid: false, reason: 'consumed' };
     if (session.expiresAt <= now) return { valid: false, reason: 'expired' };
     if (session.absoluteExpiresAt !== null && session.absoluteExpiresAt <= now) return { valid: false, reason: 'absolute_timeout' };
     if (session.idleExpiresAt !== null && session.idleExpiresAt <= now) return { valid: false, reason: 'idle_timeout' };
-    if (!(await this.o.repository.isIndexed(session))) return { valid: false, reason: 'invalid' };
-    if (this.o.config.securityVersionEnabled) {
-      const current = await this.o.repository.getSecurityVersion(session.userId);
-      if (current === null || session.securityVersion !== Number(current)) return { valid: false, reason: 'invalid' };
-    }
-    return { valid: true, session };
+    if (!read.indexed) return { valid: false, reason: 'invalid' };
+    if (this.o.config.securityVersionEnabled && (read.securityVersion === null || session.securityVersion !== Number(read.securityVersion))) return { valid: false, reason: 'invalid' };
+    return { valid: true, read };
   }
 
   /** Validates and returns an active session, throwing a typed error for invalid state. */
@@ -89,12 +95,12 @@ export class SessionService {
     return result.session;
   }
 
-  /** Applies rolling idle-expiration rules with repository-level touch throttling. */
+  /** Applies rolling idle-expiration rules with repository-level touch throttling, writing from the read validation made. */
   async touch(token: string): Promise<void> {
-    const session = await this.get(token);
+    const result = await this.validateRead(token);
+    if (!result.valid) throw errorForReason(result.reason);
     if (!this.o.config.rolling) return;
-    const result = await this.o.repository.touch(session, await this.now());
-    if (result === 'invalid') throw new SessionExpiredError();
+    if (await this.o.repository.touch(result.read) === 'invalid') throw new SessionExpiredError();
   }
 
   /** Updates mutable session fields with optional optimistic-concurrency protection. */
@@ -210,7 +216,7 @@ export class SessionService {
 function validateUserId(value: string): void { if (typeof value !== 'string' || value.length < 1 || value.length > 256) throw new SessionInvalidError(); }
 function validateOptionalString(value: string | undefined, max: number): void { if (value !== undefined && (typeof value !== 'string' || value.length > max)) throw new SessionInvalidError(); }
 function validateMetadata(value: SessionPatch['metadata'], maxBytes: number): void { if (value === undefined) return; try { const encoded = JSON.stringify(value); if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) throw new SessionInvalidError(); } catch (error) { if (error instanceof SessionInvalidError) throw error; throw new SessionInvalidError(); } }
-function errorForReason(reason: Exclude<ValidationResult, { valid: true }>['reason']): Error {
+function errorForReason(reason: InvalidReason): Error {
   if (reason === 'not_found') return new SessionNotFoundError();
   if (reason === 'expired' || reason === 'idle_timeout' || reason === 'absolute_timeout') return new SessionExpiredError();
   if (reason === 'revoked') return new SessionRevokedError();

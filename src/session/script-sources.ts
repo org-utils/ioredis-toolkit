@@ -45,6 +45,17 @@ if max > 0 then
 end
 return result
 `,
+  'read_session': `-- KEYS[1] session key
+-- KEYS[2] user's session set
+-- KEYS[3] the user's security version
+-- ARGV[1] tokenHash
+-- Returns {record or nil, 1 if the user's session set holds the token hash else 0, security version or nil, server seconds}.
+-- One read in the user's slot, so the record and its membership are seen at the same instant. TIME is Redis server time,
+-- authoritative under ADR-0002; the script writes nothing, so reading it here is allowed on every Redis version.
+local indexed = 0
+if redis.call('ZSCORE', KEYS[2], ARGV[1]) then indexed = 1 end
+return {redis.call('GET', KEYS[1]), indexed, redis.call('GET', KEYS[3]), redis.call('TIME')[1]}
+`,
   'replace_session': `-- KEYS[1] session key
 -- ARGV[1] SHA-1 of the stored value the replacement was worked out from
 -- ARGV[2] replacement value

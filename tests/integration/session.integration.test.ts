@@ -439,6 +439,33 @@ describeOnEachTopology('sessions against real Redis', redis => {
     });
   });
 
+  describe('round trips', () => {
+    /** The name of each command a piece of session work sent, in the order the servers received them. */
+    async function commandsSentBy(namespace: string, work: () => Promise<unknown>): Promise<string[]> {
+      return (await redis.commandsFromClientsOf(namespace, work)).map(([name]) => name!.toLowerCase());
+    }
+
+    it.each([false, true])('validates a credential in two commands, with securityVersionEnabled %s', async securityVersionEnabled => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { securityVersionEnabled });
+      const { token } = await sessions.create({ userId: 'integration-user', securityVersion: 1 });
+      // The first validation may have to send a script the server does not hold yet.
+      await sessions.validate(token);
+
+      expect(await commandsSentBy(namespace, async () => { expect((await sessions.validate(token)).valid).toBe(true); })).toHaveLength(2);
+    });
+
+    it('touches a session in what validating it takes and the one conditional write', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace, { rolling: true, touchInterval: 0, idleTimeout: 300 });
+      const { token } = await sessions.create({ userId: 'integration-user' });
+      await sessions.touch(token);
+
+      const validating = await commandsSentBy(namespace, () => sessions.validate(token));
+      expect(await commandsSentBy(namespace, () => sessions.touch(token))).toEqual([...validating, 'evalsha']);
+    });
+  });
+
   it('lists only sessions that have not passed any of their expiries', async () => {
     const namespace = redis.newNamespace();
     const sessions = sessionsIn(namespace, { idleTimeout: 300 });
