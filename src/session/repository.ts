@@ -206,15 +206,18 @@ export class SessionRepository {
   }
 
   /**
-   * Revokes a bounded batch and returns the number of indexed sessions remaining. The records and the user's session set
-   * share the user's slot, so they go in one pipeline; the token locators live in other slots and are deleted after, as
-   * best-effort cleanup, since a session whose record is gone is unusable already.
+   * Revokes a bounded batch and returns the number of indexed sessions remaining. The token locators live in other slots
+   * and go first, through the cluster-aware delete; a credential without one already reads as not found. The records and
+   * the user's session set share the user's slot, so they go after in one pipeline. A failure at either step throws, and
+   * a retry finds the same batch still in the set.
    */
   async revokeAll(userId: string, limit: number): Promise<{ affected: number; remaining: number }> {
     const bounded = Math.min(Math.max(1, limit), this.o.config.maxBatchSize);
     const setKey = this.o.keys.userIndex(userId);
     const members = await this.o.redis.zrange(setKey, 0, bounded - 1);
     if (!members.length) return { affected: 0, remaining: 0 };
+    try { await this.o.redis.del(...members.map(tokenHash => this.o.keys.tokenIndex(tokenHash))); }
+    catch (error) { throw new SessionStorageError('One or more revokeAll operations failed', error); }
     const userTag = this.o.keys.userTag(userId);
     const pipeline = this.o.redis.pipeline();
     pipeline.del(...members.map(tokenHash => this.o.keys.sessionByTag(userTag, tokenHash)));
@@ -223,8 +226,8 @@ export class SessionRepository {
     const results = await pipeline.exec();
     if (!results) throw new SessionStorageError('Redis pipeline unavailable');
     if (results.some(([error]) => error)) throw new SessionStorageError('One or more revokeAll operations failed');
-    await this.safeDel(...members.map(tokenHash => this.o.keys.tokenIndex(tokenHash)));
-    return { affected: members.length, remaining: Number(results[2]![1]) };
+    const [, , [, remaining]] = results as [unknown, unknown, [Error | null, number]];
+    return { affected: members.length, remaining };
   }
 
   /**

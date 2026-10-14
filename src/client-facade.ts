@@ -2,7 +2,7 @@ import { RedisClientWrapper, RedisConfigurationError, containedReporter, createR
 import { RedisCache, parseCacheConfig, type CacheConfig } from './cache/index.js';
 import { RedisLock, parseLockConfig, type LockConfig } from './lock/index.js';
 import { RedisRateLimiter, parseRateLimitConfig, type RateLimitConfig } from './rate-limit/index.js';
-import { RedisPubSub, parsePubSubConfig, type PubSubConfig } from './pubsub/index.js';
+import { PubSubError, RedisPubSub, parsePubSubConfig, type PubSubConfig } from './pubsub/index.js';
 import { RedisStreams, parseStreamsConfig, type StreamsConfig } from './streams/index.js';
 import { createSessionManager, parseSessionConfig, type CreateSessionManagerOptions, type KeyManager, type SessionConfig, type SessionManager, type SessionMetrics } from './session/index.js';
 import type { ModuleConfigMode } from './modules-config.js';
@@ -77,6 +77,8 @@ export class RedisClient extends RedisClientWrapper {
   private readonly dependencies: RedisClientDependencies;
   private readonly report: ErrorReporter<RedisErrorSource>;
   private retiredPubSub: Promise<void> = Promise.resolve();
+  /** Whether the current Pub/Sub module has a subscription live or in flight, which reconfiguring it would drop. */
+  private pubsubLive = false;
 
   /** Creates the shared Redis facade and normalizes every module's global configuration. */
   constructor(connection: ReturnType<typeof createRedisConnection>, config: RedisClientConfig, dependencies: RedisClientDependencies = {}) {
@@ -95,7 +97,7 @@ export class RedisClient extends RedisClientWrapper {
   /** Returns the configured distributed-lock module, creating it lazily. Throws if the module is disabled. */
   get lock(): RedisLock {
     if (!this.moduleConfig.lock.enabled) throw new RedisConfigurationError('Lock module is disabled');
-    return this.lockModule ??= new RedisLock(this, this.moduleConfig.lock);
+    return this.lockModule ??= new RedisLock(this, this.moduleConfig.lock, this.report);
   }
   /** Returns the configured rate-limiter module, creating it lazily. Throws if the module is disabled. */
   get rateLimiter(): RedisRateLimiter {
@@ -105,7 +107,7 @@ export class RedisClient extends RedisClientWrapper {
   /** Returns the configured Pub/Sub module, creating it lazily. Throws if the module is disabled. */
   get pubsub(): RedisPubSub {
     if (!this.moduleConfig.pubsub.enabled) throw new RedisConfigurationError('Pub/Sub module is disabled');
-    return this.pubsubModule ??= new RedisPubSub(this, this.moduleConfig.pubsub, this.report);
+    return this.pubsubModule ??= this.newPubSub();
   }
   /** Returns the configured Streams module, creating it lazily. Throws if the module is disabled. */
   get streams(): RedisStreams {
@@ -121,6 +123,13 @@ export class RedisClient extends RedisClientWrapper {
     return this.sessionModule;
   }
 
+  /** A Pub/Sub module on the current configuration, whose liveness is tracked for as long as it is the current one. */
+  private newPubSub(): RedisPubSub {
+    const pubsub: RedisPubSub = new RedisPubSub(this, this.moduleConfig.pubsub, this.report, live => { if (this.pubsubModule === pubsub) this.pubsubLive = live; });
+    this.pubsubLive = false;
+    return pubsub;
+  }
+
   /** Puts one module's new configuration in effect, unless it would collide with another module's namespace, in which case the configuration in effect is kept. */
   private reconfigure<Module extends keyof ModuleConfigs>(module: Module, next: ModuleConfigs[Module]): void {
     assertNamespacesDisjoint({ ...this.moduleConfig, [module]: next });
@@ -130,13 +139,25 @@ export class RedisClient extends RedisClientWrapper {
   /** Merges or replaces the global cache configuration and returns this client for fluent chaining. */
   withCache(options: Partial<CacheConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('cache', parseCacheConfig(mode === 'merge' ? { ...this.moduleConfig.cache, ...options } : options)); this.cacheModule = new RedisCache(this, this.moduleConfig.cache); return this; }
   /** Merges or replaces the global lock configuration and returns this client for fluent chaining. */
-  withLock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('lock', parseLockConfig(mode === 'merge' ? { ...this.moduleConfig.lock, ...options } : options)); this.lockModule = new RedisLock(this, this.moduleConfig.lock); return this; }
+  withLock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('lock', parseLockConfig(mode === 'merge' ? { ...this.moduleConfig.lock, ...options } : options)); this.lockModule = new RedisLock(this, this.moduleConfig.lock, this.report); return this; }
   /** Alias for withLock for codebases that prefer lowercase module naming. */
   withlock(options: Partial<LockConfig> = {}, mode: ModuleConfigMode = 'merge'): this { return this.withLock(options, mode); }
   /** Merges or replaces the global rate-limit configuration and returns this client for fluent chaining. */
   withRateLimit(options: Partial<RateLimitConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('rateLimit', parseRateLimitConfig(mode === 'merge' ? { ...this.moduleConfig.rateLimit, ...options } : options)); this.rateLimitModule = new RedisRateLimiter(this, this.moduleConfig.rateLimit); return this; }
-  /** Merges or replaces the global Pub/Sub configuration and returns this client for fluent chaining. */
-  withPubSub(options: Partial<PubSubConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('pubsub', parsePubSubConfig(mode === 'merge' ? { ...this.moduleConfig.pubsub, ...options } : options)); const retiring = this.pubsubModule?.close().catch(() => undefined); this.retiredPubSub = Promise.all([this.retiredPubSub, retiring]).then(() => undefined); this.pubsubModule = new RedisPubSub(this, this.moduleConfig.pubsub, this.report); return this; }
+  /**
+   * Merges or replaces the global Pub/Sub configuration and returns this client for fluent chaining. The subscriber it
+   * replaces is closed, so while that one has a live subscription this throws `PubSubError` with `PUBSUB_STATE` and keeps
+   * the configuration and subscriber in effect.
+   */
+  withPubSub(options: Partial<PubSubConfig> = {}, mode: ModuleConfigMode = 'merge'): this {
+    const next = parsePubSubConfig(mode === 'merge' ? { ...this.moduleConfig.pubsub, ...options } : options);
+    if (this.pubsubLive) throw new PubSubError('PUBSUB_STATE', 'Pub/Sub cannot be reconfigured while it has live subscriptions; unsubscribe them first');
+    this.reconfigure('pubsub', next);
+    const retiring = this.pubsubModule?.close().catch(() => undefined);
+    this.retiredPubSub = Promise.all([this.retiredPubSub, retiring]).then(() => undefined);
+    this.pubsubModule = this.newPubSub();
+    return this;
+  }
   /** Merges or replaces the global Streams configuration and returns this client for fluent chaining. */
   withStreams(options: Partial<StreamsConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('streams', parseStreamsConfig(mode === 'merge' ? { ...this.moduleConfig.streams, ...options } : options)); this.streamsModule = new RedisStreams(this, this.moduleConfig.streams, this.report); return this; }
   /** Merges or replaces the global session configuration and returns this client for fluent chaining. */

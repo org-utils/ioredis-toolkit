@@ -35,7 +35,7 @@ DELETED (physical cleanup)
 | rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
 | revoke | active/revoked | revoked/deleted | an unconditional same-key write marks the record; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted) | idempotent |
 | destroy | any | deleted | individual writes | idempotent |
-| revokeAll | user's session set | bounded deletion | one same-slot pipeline deletes the batch's records and removes them from the user's session set; their token locators, in other slots, are deleted after through the cluster-aware delete | idempotent per batch |
+| revokeAll | user's session set | bounded deletion | the batch's token locators, in other slots, are deleted first through the cluster-aware delete; then one same-slot pipeline deletes their records and removes them from the user's session set | idempotent per batch |
 
 ### Compare-and-set
 

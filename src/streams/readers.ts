@@ -7,19 +7,20 @@ interface Reader { connection: RedisConnection; client: RedisClientWrapper }
  * Connections for blocking stream reads, duplicated from the shared one so that a read waiting on a stream never holds up
  * another command. Grown lazily: a read leases an idle connection, or a new one when none is idle, and hands it back after.
  */
-class StreamReaders {
+export class StreamReaders {
   private readonly idle: Reader[] = [];
   private readonly open = new Set<Reader>();
   private closed = false;
 
+  /** Readers duplicated from `redis`, whose connection errors go to `report`. */
   constructor(private readonly redis: RedisClientWrapper, private readonly report: ErrorReporter<'stream-reader'>) {}
 
   /**
-   * Runs `read` on a leased connection. Once the readers are closed it runs on the shared connection instead, which is
-   * closed with them, so the read fails as any other command on a closed client does and opens nothing.
+   * Runs `read` on a leased connection. Once the readers are closed it rejects instead, opening nothing and never falling
+   * back to the shared connection, which may still be serving every other command.
    */
   async using<T>(read: (client: RedisClientWrapper) => Promise<T>): Promise<T> {
-    if (this.closed) return read(this.redis);
+    if (this.closed) throw new Error('Stream readers are closed');
     const reader = this.idleReader() ?? this.lease();
     try { return await read(reader.client); }
     finally { this.giveBack(reader); }
@@ -42,6 +43,7 @@ class StreamReaders {
     return undefined;
   }
 
+  /** Opens a new reader: a duplicate of the shared connection, reporting its errors and tracked so close() reaches it. */
   private lease(): Reader {
     const connection = this.redis.duplicateConnection();
     reportConnectionErrors(connection, this.report, 'stream-reader');

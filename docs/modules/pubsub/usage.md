@@ -29,9 +29,11 @@ const redis = createRedisClient({
 
 The dedicated subscriber connection has a default `'error'` listener attached automatically, so a connection drop, auth failure, or network error on it can no longer crash the process with an uncaught exception. The listener forwards each error to the client's `onError` hook with source `subscriber`; see the README's "Shutdown and error visibility".
 
-A malformed (non-JSON) message delivered on a subscribed channel — for example, published by a non-conforming external client — is silently dropped instead of throwing inside ioredis's `message` event and crashing the process. Handlers are only invoked for messages that parse successfully.
+Each handler call is isolated. A handler that throws, or an async handler whose promise rejects, is reported to the `onError` hook with source `pubsub-handler` and the logical `channel`, and the other handlers on that channel still receive the message. A rejection never surfaces as an unhandled rejection, which would end a Node 22 process.
 
-Repeated `subscribe()` calls for the same physical channel issue a single underlying `SUBSCRIBE`; the physical `UNSUBSCRIBE` is only issued once the last logical handler for that channel unsubscribes.
+A malformed (non-JSON) message delivered on a subscribed channel, for example one published by a non-conforming external client, is handed to no handler. It is reported once to the `onError` hook as a `PubSubError` with code `PUBSUB_SERIALIZATION`, source `pubsub-handler` and the logical `channel`.
+
+Repeated `subscribe()` calls for the same physical channel issue a single underlying `SUBSCRIBE`; the physical `UNSUBSCRIBE` is only issued once the last logical handler for that channel unsubscribes. Concurrent `subscribe()` calls to one channel share that `SUBSCRIBE`, and each resolves only once Redis has confirmed it, so a message published as soon as any of them resolves reaches every one. A `subscribe()` that fails, for example on a lost connection, removes the handler it registered, so a later `subscribe()` to that channel sends a fresh `SUBSCRIBE` instead of waiting on a dead one.
 
 ## `publish<T>(channel, value)`
 
@@ -105,8 +107,9 @@ Every error this module raises itself is a `PubSubError`, which extends the pack
 | Code | Thrown when |
 |---|---|
 | `PUBSUB_CONFIGURATION` | the Pub/Sub configuration is invalid |
-| `PUBSUB_SERIALIZATION` | `publish()` is given a value JSON cannot represent |
+| `PUBSUB_SERIALIZATION` | `publish()` is given a value JSON cannot represent. Also reported to the `onError` hook, never thrown, for a received message that is not JSON |
 | `PUBSUB_LIMIT` | the encoded message exceeds `maxMessageBytes` |
+| `PUBSUB_STATE` | `withPubSub()` is called while a subscription is live |
 
 ## Overrides
 
@@ -115,4 +118,4 @@ redis.withPubSub({ namespace: 'critical' });
 redis.withPubSub({ maxMessageBytes: 256 * 1024 }, 'replace');
 ```
 
-When replacing or reconfiguring Pub/Sub, close the previous subscriber connection before relying on the new configuration.
+Reconfiguring Pub/Sub replaces the subscriber connection and closes the old one. So that this never silently drops a listener, `withPubSub()` throws `PubSubError` with code `PUBSUB_STATE` while any subscription is live, including one still being confirmed, and leaves the configuration and the subscriptions in effect. Unsubscribe them first, then reconfigure.
