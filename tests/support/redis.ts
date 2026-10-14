@@ -180,6 +180,10 @@ export interface RedisFixture {
   readonly observer: Observer;
   /** The topology's connection config, as the factories take it. */
   connectionConfig(): RedisConfig;
+  /** The topology's connection config, with every connection the package opens from it named `connectionName`. */
+  namedConnectionConfig(connectionName: string): RedisConfig;
+  /** The connections any server holds open under a client name, one `CLIENT LIST` line each. */
+  connectionsNamed(connectionName: string): Promise<string[]>;
   /** The client facade on this topology, closed once the suite is done. */
   connectClient(modules?: ModuleSections, dependencies?: RedisClientDependencies): RedisClient;
   /** The session manager `createSessionManagerFromRedis` builds on this topology. Its connection is closed once the suite is done. */
@@ -233,6 +237,11 @@ function redisFixture(topology: Topology, config: RedisConfig): RedisFixture {
     topology,
     get observer() { return observer; },
     connectionConfig: () => config,
+    namedConnectionConfig: connectionName => (config.mode === 'cluster' ? { ...config, redisOptions: { ...config.redisOptions, connectionName } } : { ...config, connectionName }),
+    connectionsNamed: async connectionName => {
+      const lists = await Promise.all(nodesOf(observer).map(async node => await node.client('LIST') as string));
+      return lists.flatMap(list => list.split('\n')).filter(line => line.includes(` name=${connectionName} `));
+    },
     connectClient(modules = {}, dependencies = {}) {
       const client = createRedisClient({ ...config, ...modules }, dependencies);
       opened.push(client);

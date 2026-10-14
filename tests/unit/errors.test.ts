@@ -56,6 +56,7 @@ describe('error codes', () => {
 
     { code: 'STREAMS_CONFIGURATION', type: StreamsError, condition: 'an invalid Streams configuration', operation: () => parseStreamsConfig({ maxEntries: 0 }) },
     { code: 'STREAMS_INPUT', type: StreamsError, condition: 'a consumer-group read that names no consumer', operation: () => offlineClient({ streams: { enabled: true } }).streams.read('stream', { group: 'group' }) },
+    { code: 'STREAMS_INPUT', type: StreamsError, condition: 'a stream entry with no fields', operation: async () => (await unreachableClient({ streams: { enabled: true } })).streams.add('stream', {}) },
   ])('reports $code for $condition', async ({ code, type, operation }) => {
     await expectPackageError(operation, type, code);
   });

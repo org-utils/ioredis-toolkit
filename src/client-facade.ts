@@ -110,7 +110,7 @@ export class RedisClient extends RedisClientWrapper {
   /** Returns the configured Streams module, creating it lazily. Throws if the module is disabled. */
   get streams(): RedisStreams {
     if (!this.moduleConfig.streams.enabled) throw new RedisConfigurationError('Streams module is disabled');
-    return this.streamsModule ??= new RedisStreams(this, this.moduleConfig.streams);
+    return this.streamsModule ??= new RedisStreams(this, this.moduleConfig.streams, this.report);
   }
   /** Returns the configured session manager, creating it lazily. */
   get sessions(): SessionManager {
@@ -138,14 +138,17 @@ export class RedisClient extends RedisClientWrapper {
   /** Merges or replaces the global Pub/Sub configuration and returns this client for fluent chaining. */
   withPubSub(options: Partial<PubSubConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('pubsub', parsePubSubConfig(mode === 'merge' ? { ...this.moduleConfig.pubsub, ...options } : options)); const retiring = this.pubsubModule?.close().catch(() => undefined); this.retiredPubSub = Promise.all([this.retiredPubSub, retiring]).then(() => undefined); this.pubsubModule = new RedisPubSub(this, this.moduleConfig.pubsub, this.report); return this; }
   /** Merges or replaces the global Streams configuration and returns this client for fluent chaining. */
-  withStreams(options: Partial<StreamsConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('streams', parseStreamsConfig(mode === 'merge' ? { ...this.moduleConfig.streams, ...options } : options)); this.streamsModule = new RedisStreams(this, this.moduleConfig.streams); return this; }
+  withStreams(options: Partial<StreamsConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('streams', parseStreamsConfig(mode === 'merge' ? { ...this.moduleConfig.streams, ...options } : options)); this.streamsModule = new RedisStreams(this, this.moduleConfig.streams, this.report); return this; }
   /** Merges or replaces the global session configuration and returns this client for fluent chaining. */
   withSessions(options: Partial<SessionConfig> = {}, mode: ModuleConfigMode = 'merge'): this { this.reconfigure('sessions', parseSessionConfig(mode === 'merge' ? { ...this.moduleConfig.sessions, ...options } : options)); this.sessionModule = undefined; return this; }
   /** Alias for withSession for singular naming. */
   withSession(options: Partial<SessionConfig> = {}, mode: ModuleConfigMode = 'merge'): this { return this.withSessions(options, mode); }
 
-  /** Closes the shared connection and every Pub/Sub subscriber connection: quit if up, disconnected otherwise. Idempotent. */
-  override async close(): Promise<void> { await Promise.all([this.pubsubModule?.close(), this.retiredPubSub, super.close()]); }
+  /**
+   * Closes the shared connection and every Pub/Sub subscriber connection, quit if up and disconnected otherwise, and
+   * disconnects every stream reader, so a blocking read still waiting ends at once. Idempotent.
+   */
+  override async close(): Promise<void> { await Promise.all([this.pubsubModule?.close(), this.retiredPubSub, this.streamsModule?.close(), super.close()]); }
 
   /** Returns a snapshot of normalized global module configuration. */
   get config(): Readonly<typeof this.moduleConfig> { return this.moduleConfig; }
