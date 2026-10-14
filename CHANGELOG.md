@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.5
+
+### Patch Changes
+
+- 99151eb: `lock.using()` now always resolves with the callback's result, or rejects with the callback's error, even when releasing the lock fails. Before, a release failure, such as a Redis blip after the work had finished, replaced the real outcome. The release failure now goes to the `onError` hook with source `lock-release`, and the lock lapses at the end of its TTL.
+  
+  `acquire()` and `extend()` reject more bad TTLs with `LockError` code `LOCK_INPUT`, before contacting Redis: `NaN`, which used to reach Redis as `PX NaN`; `Infinity`, which used to report `LOCK_LIMIT`; and any TTL that is not a whole number of milliseconds, such as `0.0001`. `LOCK_LIMIT` and `LOCK_HELD` behave as before.
+- 2354be7: Pub/Sub handlers can no longer crash the process, and subscription state survives failures and reconfiguration.
+  
+  - Each handler call is isolated. A handler that throws, an async handler that rejects, or a received message that is not valid JSON is reported to the `onError` hook with source `pubsub-handler` and the logical `channel`, and the other handlers on the channel still run. Before, a throwing handler raised inside ioredis's event handler, and a rejecting one was an unhandled rejection; either could end the process. A non-JSON message, which was silently dropped, is now reported as a `PubSubError` with code `PUBSUB_SERIALIZATION`.
+  - Concurrent `subscribe()` calls to one channel share one Redis subscription, and each resolves only once Redis has confirmed it. Before, every call after the first resolved at once and could miss the first messages.
+  - A failed `subscribe()` removes the handler it registered, so a later `subscribe()` to the channel tries again. Before, the channel stayed dead for every later subscriber.
+  - `withPubSub()` throws `PubSubError` with the new code `PUBSUB_STATE` while the current subscriber has live subscriptions, instead of silently dropping them. Unsubscribe first, then reconfigure. `PubSubErrorCode` gains `'PUBSUB_STATE'`; an exhaustive `switch` over it needs the new case.
+- e84224e: Fixes to the previous release's stream readers, `revokeAll()` and multi-key deletes.
+  
+  - After `streams.close()`, a blocking `read()` now rejects. Before, it ran on the client's shared connection, which `streams.close()` leaves open, so it could stall every other command again. `RedisClient.close()` behaves as before.
+  - `revokeAll()` throws `SessionStorageError` again when deleting the token locators fails, as it did before the Cluster fix, so a retry revokes the same batch. The locators are now deleted before the records.
+  - A multi-key delete on standalone Redis, such as `cache.delete(...keys)`, now sends `DEL`s of at most 500 keys instead of one unbounded `DEL`.
+
 ## 1.0.4
 
 ### Patch Changes
