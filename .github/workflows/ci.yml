@@ -5,6 +5,12 @@ on:
     branches:
       - main
 
+# One release run at a time on a branch. GitHub can deliver one merge's push twice, and two runs publishing
+# together race npm: the second sees the version as unpublished and fails with E409. Queued, it finds nothing to publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
