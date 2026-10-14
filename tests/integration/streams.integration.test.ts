@@ -89,7 +89,7 @@ describeOnEachTopology('Streams against real Redis', redis => {
     const { client } = namedClient();
     await client.streams.createGroup('orders', 'workers');
     const id = await client.streams.add('orders', { a: '1' });
-    await client.streams.read('orders', { group: 'workers', consumer: 'c', blockMs: 1 });
+    expect(await client.streams.read('orders', { group: 'workers', consumer: 'c', blockMs: 1 })).toEqual([{ id, fields: { a: '1' } }]);
     await client.streams.delete('orders', id);
 
     expect(await client.streams.read('orders', { group: 'workers', consumer: 'c', id: '0', blockMs: 1 })).toEqual([{ id, fields: {} }]);
