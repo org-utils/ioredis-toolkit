@@ -64,7 +64,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     (value.securityVersion === null || Number.isSafeInteger(value.securityVersion)) &&
     isOptionalSafeInteger(value.idleTimeoutSeconds) &&
     isOptionalString(value.deviceId) && isOptionalString(value.ipAddress) && isOptionalString(value.userAgent) &&
-    isOptionalString(value.rotatedFrom) && isOptionalString(value.successorJti) && isOptionalString(value.rotationId) &&
+    isOptionalString(value.rotatedFrom) && isOptionalString(value.successorJti) && isOptionalString(value.successorId) && isOptionalString(value.rotationId) &&
     isOptionalSafeInteger(value.consumedAt) &&
     (value.metadata === undefined || isRecord(value.metadata));
 }

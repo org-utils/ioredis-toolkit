@@ -142,7 +142,7 @@ export class SessionService {
     };
     // Cross-slot successor creation is deliberately two-phase. Consuming the predecessor
     // is authoritative and atomic; failure afterwards can only deny access, never create two valid successors.
-    await this.o.repository.consume(current, serverSeconds, Math.min(300, Math.max(1, remaining)));
+    await this.o.repository.consume(current, successor, serverSeconds, Math.min(300, Math.max(1, remaining)));
     try { await this.o.repository.create(successor); }
     catch (error) { throw new SessionRotationError('Rotation consumed the predecessor but successor creation failed', error); }
     this.metrics.increment('session.rotated');

@@ -28,6 +28,13 @@ describeOnEachTopology('sessions against real Redis', redis => {
     return holding[0]!;
   }
 
+  /** The record of a session: the one key under the namespace that names the session id and carries the user's hash tag. */
+  async function recordKey(namespace: string, sessionId: string): Promise<string> {
+    const records = (await redis.keysUnder(namespace)).filter(key => key.includes(sessionId) && key.includes('{'));
+    expect(records).toHaveLength(1);
+    return records[0]!;
+  }
+
   /** The one key under a namespace holding a user's session set, the sorted set of that user's sessions. */
   async function sessionSetKey(namespace: string): Promise<string> {
     const sets: string[] = [];
@@ -296,9 +303,9 @@ describeOnEachTopology('sessions against real Redis', redis => {
       await new Promise(resolve => setTimeout(resolve, 1_100));
       await sessions.revoke(created.token);
 
-      const [record] = (await redis.keysUnder(namespace)).filter(key => key.includes(created.session.id) && key.includes('{'));
+      const record = await recordKey(namespace, created.session.id);
       // The locator is cut just after the tombstone is written, so it may outlive it by that moment, never by a second.
-      expect(await redis.observer.pttl(await locatorOf(namespace, created.session.id))).toBeLessThan((await redis.observer.pttl(record!)) + 1_000);
+      expect(await redis.observer.pttl(await locatorOf(namespace, created.session.id))).toBeLessThan((await redis.observer.pttl(record)) + 1_000);
     });
 
     it('keeps reporting a rotated credential as consumed, and a revoked one as revoked, while the tombstone lasts', async () => {
@@ -339,6 +346,90 @@ describeOnEachTopology('sessions against real Redis', redis => {
       const left = (await redis.keysUnder(namespace)).join('\n');
       expect(left).not.toContain(rotated.session.id);
       expect(left).not.toContain(revoked.session.id);
+    });
+  });
+
+  describe('revoke() of a consumed credential', () => {
+    it('ends the successor and leaves the consumed credential consumed', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const created = await sessions.create({ userId: 'integration-user' });
+      const rotated = await sessions.rotate(created.token);
+      await sessions.revoke(created.token);
+
+      expect(await sessions.validate(rotated.token)).toEqual({ valid: false, reason: 'revoked' });
+      expect(await sessions.validate(created.token)).toEqual({ valid: false, reason: 'consumed' });
+    });
+
+    it('ends the session at the end of a rotation chain, past every consumed one', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const first = await sessions.create({ userId: 'integration-user' });
+      const second = await sessions.rotate(first.token);
+      const last = await sessions.rotate(second.token);
+      await sessions.revoke(first.token);
+
+      expect(await sessions.validate(last.token)).toEqual({ valid: false, reason: 'revoked' });
+      expect(await sessions.validate(second.token)).toEqual({ valid: false, reason: 'consumed' });
+    });
+
+    it("neither restarts the consumed credential's tombstone nor extends its locator", async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(created.token);
+      const record = await recordKey(namespace, created.session.id);
+      const locator = (await redis.keysUnder(namespace)).find(key => key.includes(created.session.id) && !key.includes('{'))!;
+      const before = { record: await redis.observer.get(record), locatorTtl: await redis.observer.pttl(locator) };
+      await sessions.revoke(created.token);
+
+      expect(await redis.observer.get(record)).toBe(before.record);
+      expect(await redis.observer.pttl(locator)).toBeLessThanOrEqual(before.locatorTtl);
+    });
+
+    it('ends nothing for a credential consumed by a release that kept no link to its successor', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      const rotated = await sessions.rotate(created.token);
+      const record = await recordKey(namespace, created.session.id);
+      const unlinked = JSON.parse((JSON.parse((await redis.observer.get(record))!) as { data: string }).data) as Record<string, unknown>;
+      delete unlinked.successorId;
+      await redis.observer.set(record, JSON.stringify({ v: 1, data: JSON.stringify(unlinked) }), 'KEEPTTL');
+      await sessions.revoke(created.token);
+
+      expect((await sessions.validate(rotated.token)).valid).toBe(true);
+      expect(await sessions.validate(created.token)).toEqual({ valid: false, reason: 'consumed' });
+    });
+
+    it('keeps reporting replay of the consumed credential', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const created = await sessions.create({ userId: 'integration-user' });
+      await sessions.rotate(created.token);
+      await sessions.revoke(created.token);
+
+      await expectPackageError(() => sessions.rotate(created.token), SessionReplayError, 'SESSION_REPLAY');
+    });
+
+    it('ends nothing when the successor is gone', async () => {
+      const namespace = redis.newNamespace();
+      const sessions = sessionsIn(namespace);
+      const created = await sessions.create({ userId: 'integration-user' });
+      const rotated = await sessions.rotate(created.token);
+      // As if creating the successor had failed after its predecessor was consumed.
+      await redis.observer.del(await recordKey(namespace, rotated.session.id));
+      await sessions.revoke(created.token);
+
+      expect(await sessions.validate(created.token)).toEqual({ valid: false, reason: 'consumed' });
+    });
+
+    it('leaves a successor that was already revoked as it was', async () => {
+      const sessions = sessionsIn(redis.newNamespace());
+      const created = await sessions.create({ userId: 'integration-user' });
+      const rotated = await sessions.rotate(created.token);
+      await sessions.revoke(rotated.token);
+      await sessions.revoke(created.token);
+
+      expect(await sessions.validate(rotated.token)).toEqual({ valid: false, reason: 'revoked' });
+      expect(await sessions.validate(created.token)).toEqual({ valid: false, reason: 'consumed' });
     });
   });
 
@@ -580,10 +671,8 @@ describeOnEachTopology('sessions against real Redis', redis => {
     const sessions = sessionsIn(namespace, { idleTimeout: 300, absoluteTimeout: 600, ttl: 600 });
     const live = await sessions.create({ userId: 'integration-user' });
     const expired = await sessions.create({ userId: 'integration-user' });
-    // The record is the one key that names the session and carries the user's hash tag.
-    const [expiredRecordKey] = (await redis.keysUnder(namespace)).filter(key => key.includes(expired.session.id) && key.includes('{'));
     const lapsed = { ...expired.session, [expiry]: expired.session.createdAt - 1 };
-    await redis.observer.set(expiredRecordKey!, JSON.stringify({ v: 1, data: JSON.stringify(lapsed) }), 'KEEPTTL');
+    await redis.observer.set(await recordKey(namespace, expired.session.id), JSON.stringify({ v: 1, data: JSON.stringify(lapsed) }), 'KEEPTTL');
 
     expect(await sessions.list('integration-user')).toEqual([live.session]);
   });
@@ -593,8 +682,7 @@ describeOnEachTopology('sessions against real Redis', redis => {
     const sessions = sessionsIn(namespace);
     const live = await sessions.create({ userId: 'integration-user' });
     const gone = await sessions.create({ userId: 'integration-user' });
-    const [goneRecordKey] = (await redis.keysUnder(namespace)).filter(key => key.includes(gone.session.id) && key.includes('{'));
-    await redis.observer.del(goneRecordKey!);
+    await redis.observer.del(await recordKey(namespace, gone.session.id));
 
     expect(await sessions.list('integration-user')).toEqual([live.session]);
     expect(await redis.observer.zrange(await sessionSetKey(namespace), 0, -1)).toEqual([live.session.id]);

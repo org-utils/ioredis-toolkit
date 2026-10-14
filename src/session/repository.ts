@@ -126,12 +126,16 @@ export class SessionRepository {
     }, { raw: read.raw, stored: read.record });
   }
 
-  /** Consumes a predecessor session for rotation; of any number of concurrent callers, exactly one succeeds. */
-  async consume(record: SessionRecord, serverSeconds: number, tombstoneTtl: number): Promise<void> {
+  /**
+   * Consumes a predecessor session for rotation, linking it forward to the successor it is consumed for; of any number of
+   * concurrent callers, exactly one succeeds.
+   */
+  async consume(record: SessionRecord, successor: SessionRecord, serverSeconds: number, tombstoneTtl: number): Promise<void> {
     await this.change(record, stored => {
       if (isRecord(stored) && stored.status === 'consumed') throw new SessionReplayError();
       if (!isRecord(stored) || stored.status === 'revoked' || hasExpired(stored, serverSeconds)) throw new SessionRotationError('Session cannot be rotated');
-      return { result: undefined, replacement: { ...stored, status: 'consumed', consumedAt: serverSeconds, version: stored.version + 1 }, ttl: Math.max(1, tombstoneTtl) };
+      const consumed: SessionRecord = { ...stored, status: 'consumed', consumedAt: serverSeconds, successorId: successor.id, successorJti: successor.jti, version: stored.version + 1 };
+      return { result: undefined, replacement: consumed, ttl: Math.max(1, tombstoneTtl) };
     });
     try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id); }
     catch (error) { throw new SessionStorageError('Session set cleanup failed', error); }
@@ -155,10 +159,14 @@ export class SessionRepository {
   /**
    * Marks a session revoked. The write is unconditional, so no amount of concurrent writing can hold a
    * revocation off; every other change is conditional on the value it read, so none can undo one.
+   *
+   * A consumed session stays consumed: its revocation ends the session at the end of its rotation chain instead (ADR-0004).
+   * Rotation gives a successor the same expiry as its predecessor, so `tombstoneTtl` serves that session too.
    */
   async revoke(record: SessionRecord, serverSeconds: number, tombstoneTtl: number): Promise<void> {
-    const key = this.o.keys.session(record.userId, record.id);
-    const { stored } = await this.load(key);
+    const end = await this.endOfChain(record);
+    if (!end) return;
+    const { id, key, stored } = end;
     if (stored === 'unreadable') throw new SessionStorageError('Session revocation failed');
     // Only the call that writes the tombstone cuts the locator; a later one would let it outlive the tombstone.
     const revokesNow = stored !== 'missing' && stored.status !== 'revoked';
@@ -169,9 +177,27 @@ export class SessionRepository {
         else await this.o.redis.set(key, revoked, 'XX', 'EX', String(tombstoneTtl));
       } catch (error) { throw new SessionStorageError('Session revocation failed', error); }
     }
-    try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id); }
+    try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), id); }
     catch (error) { throw new SessionStorageError('Session set cleanup failed', error); }
-    if (revokesNow) await this.expireLocator(record.id, tombstoneTtl);
+    if (revokesNow) await this.expireLocator(id, tombstoneTtl);
+  }
+
+  /**
+   * What is stored for the session at the end of a record's rotation chain: the record itself unless it is consumed, else
+   * wherever its forward links lead. Null when a link leads nowhere, to a successor that was never created or was written by
+   * a release that kept no link: nothing is left to end. A link back to a session already passed can only be corrupt data.
+   */
+  private async endOfChain(record: SessionRecord): Promise<{ id: string; key: string; stored: Stored } | null> {
+    const passed = new Set<string>();
+    for (let id = record.id; ; ) {
+      const key = this.o.keys.session(record.userId, id);
+      const { stored } = await this.load(key);
+      if (!isRecord(stored) || stored.status !== 'consumed') return { id, key, stored };
+      if (stored.successorId === undefined) return null;
+      passed.add(id);
+      if (passed.has(stored.successorId)) throw new SessionStorageError('Rotation chain links back on itself');
+      id = stored.successorId;
+    }
   }
 
   /** Removes the authoritative record and derived index entries. */

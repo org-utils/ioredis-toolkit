@@ -21,7 +21,7 @@ DELETED (physical cleanup)
 - Redis TTL may physically delete any state after its security usefulness ends.
 - `destroy` is physical deletion and idempotent.
 - `revoke` is logical denial and idempotent.
-- `revoke` of a credential that `rotate` already consumed rewrites its tombstone as `REVOKED` and restarts its expiry, still capped at 300 seconds, so that credential then validates as `revoked` rather than `consumed`. Its successor stays `ACTIVE`. Whether that should change is open in #81.
+- `revoke` of a credential that `rotate` already consumed leaves it `CONSUMED`, so it keeps validating as `consumed` and replay of it is still reported. It follows the rotation chain forward from successor to successor and revokes the session at its end, if that one is still `ACTIVE` (ADR-0004). Replay alone ends no session.
 - `rotate` atomically consumes the predecessor before successor creation.
 - A stale member of the user's session set cannot authenticate because validation requires active session state and current membership of the set.
 
@@ -34,7 +34,7 @@ DELETED (physical cleanup)
 | touch | active | active | same-key compare-and-set, worked out from the record and time validation read; leaves `version` unchanged | monotonic/idempotent effect |
 | update | active | active | same-key compare-and-set + version; a stale `expectedVersion` throws `SessionConflictError` | safe only with version semantics |
 | rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
-| revoke | active/revoked | revoked/deleted | an unconditional same-key write marks the record; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted) | idempotent |
+| revoke | active/revoked, or consumed (acts on the end of its rotation chain) | revoked/deleted | reads follow a consumed record's forward links to the end of its rotation chain, then an unconditional write marks the record there; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted) | idempotent |
 | destroy | any | deleted | individual writes | idempotent |
 | revokeAll | user's session set | bounded deletion | the batch's token locators, in other slots, are deleted first through the cluster-aware delete; then one same-slot pipeline deletes their records and removes them from the user's session set | idempotent per batch |
 

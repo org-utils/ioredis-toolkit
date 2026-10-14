@@ -60,4 +60,38 @@ _Avoid_: index, user index, authorization index
 The pointer from a credential to the user it belongs to, so that a session can be found from its credential alone.
 _Avoid_: index, token index
 
-> The remaining session vocabulary — rotation, consume, replay, tombstone, revoke — is known to be contested in the current code and has not been resolved yet. It is deliberately absent here rather than guessed at.
+**Rotation**:
+Replacing a session with a successor that carries the same identity under a new credential, consuming the session it replaces.
+_Avoid_: refresh, renewal, reissue
+
+**Successor**:
+The session a rotation creates in place of the one it consumes; that consumed session is its predecessor.
+_Avoid_: child, next session, new session
+
+**Rotation chain**:
+The sessions linked predecessor to successor by successive rotations. It never branches, and only the session at its end can be active.
+_Avoid_: family, token family, lineage
+
+**Consumed**:
+The final state of a session that rotation has replaced. A consumed session never authenticates again and never changes state again.
+_Avoid_: used, spent, rotated, superseded
+
+**Replay**:
+Presenting the credential of a consumed session.
+_Avoid_: reuse, theft (theft is one cause of replay, not the thing itself)
+
+**Revoke**:
+To end a session on purpose before it expires, leaving a tombstone.
+_Avoid_: invalidate, kill, logout (logout is the application's act; revoke is what it asks of the session)
+
+**Revoked**:
+The final state of a session ended by revocation. A revoked session never authenticates again and never changes state again.
+_Avoid_: invalidated, cancelled
+
+**Destroy**:
+To remove a session without leaving a tombstone, so its credential afterwards reads as one that never existed.
+_Avoid_: delete, purge, revoke (revoking leaves a tombstone; destroying does not)
+
+**Tombstone**:
+What a consumed or revoked session leaves behind for a bounded time, so that its credential reports why it cannot authenticate rather than reading as unknown.
+_Avoid_: marker, revocation record, revocation tombstone (the JTI revocation store's markers are not tombstones of sessions)

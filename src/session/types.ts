@@ -41,6 +41,8 @@ export interface SessionRecord {
   consumedAt?: number;
   /** Successor JTI when rotation recorded it. */
   successorJti?: string;
+  /** ID of the successor this session was consumed for, linking it forward along its rotation chain. */
+  successorId?: string;
   /** Optional application-level rotation correlation ID. */
   rotationId?: string;
 }
