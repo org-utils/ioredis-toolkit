@@ -102,9 +102,9 @@ export class SessionRepository {
     return { record, raw, indexed: indexed === 1 && ownKeys, securityVersion, serverSeconds: Number(serverSeconds) };
   }
 
-  /** Persists the current security version for a user. */
+  /** Persists the current security version for a user, for the longer of their longest-lived session and one session ttl. */
   async setSecurityVersion(userId: string, version: number): Promise<void> {
-    try { await this.o.redis.set(this.o.keys.securityVersion(userId), String(version)); }
+    try { await this.o.scripts.eval('set_security_version', [this.o.keys.securityVersion(userId), this.o.keys.userIndex(userId)], [String(version), String(this.o.config.ttl * 1000)]); }
     catch (error) { throw new SessionStorageError('Security version update failed', error); }
   }
 

@@ -27,6 +27,14 @@ if current == -1 then
   end
 end
 if ttl ~= -1 and current < ttl then redis.call('PEXPIRE', KEYS[2], ttl) end
+-- The security version lives as long as the set, so it outlives every session it is checked against, and is never
+-- shortened. One written by an earlier version without an expiry is given the set's.
+local versionTtl = redis.call('PTTL', KEYS[3])
+if versionTtl ~= -2 then
+  local setTtl = redis.call('PTTL', KEYS[2])
+  if setTtl == -1 then redis.call('PERSIST', KEYS[3])
+  elseif versionTtl == -1 or versionTtl < setTtl then redis.call('PEXPIRE', KEYS[3], setTtl) end
+end
 local result = {1}
 local max = tonumber(ARGV[5])
 if max > 0 then
@@ -55,6 +63,22 @@ return result
 local indexed = 0
 if redis.call('ZSCORE', KEYS[2], ARGV[1]) then indexed = 1 end
 return {redis.call('GET', KEYS[1]), indexed, redis.call('GET', KEYS[3]), redis.call('TIME')[1]}
+`,
+  'set_security_version': `-- KEYS[1] the user's security version
+-- KEYS[2] user's session set
+-- ARGV[1] security version
+-- ARGV[2] the configured session ttl, in milliseconds
+-- The version outlives every session in the set, and lasts at least one session ttl so that a create() already under
+-- way with the previous version still meets this one. While the set has no expiry, neither has the version.
+local ttl = tonumber(ARGV[2])
+local setTtl = redis.call('PTTL', KEYS[2])
+if setTtl == -1 then
+  redis.call('SET', KEYS[1], ARGV[1])
+  return 1
+end
+if setTtl > ttl then ttl = setTtl end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+return 1
 `,
   'replace_session': `-- KEYS[1] session key
 -- ARGV[1] SHA-1 of the stored value the replacement was worked out from
