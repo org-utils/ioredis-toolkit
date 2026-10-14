@@ -10,6 +10,8 @@ Approximate:
 - Session set member: 64-byte token hash plus sorted-set overhead.
 - Serialized record: fixed fields plus bounded metadata.
 - Token locator: token hash key + 64-byte token hash + user tag value.
+- Security version: one small key per user, under the user hash tag, when security versions are in use. It expires with the user's session set, and lives at least one session `ttl` after `setSecurityVersion()`.
+- Tombstones: a consumed or revoked session keeps its record and its token locator for the rest of its lifetime, capped at 300 seconds. An application that rotates on every request therefore holds, per user, a consumed tombstone for every rotation in the last 300 seconds alongside the active session; size for the peak rotation rate, not the active session count.
 - Redis object/allocator overhead: measure with the target Redis version and representative payloads.
 - Replication: multiply by replica count.
 - Fragmentation/headroom: reserve operational margin; do not size to `maxmemory` exactly.
@@ -22,7 +24,7 @@ Before production sizing, create representative sessions with the largest expect
 - 10 million sessions
 - 50 million sessions
 
-Include token locators, users' session sets, replication, AOF/RDB overhead, allocator fragmentation, and peak write amplification.
+Include token locators, users' session sets, security versions, tombstones, replication, AOF/RDB overhead, allocator fragmentation, and peak write amplification.
 
 ## Operational limits
 

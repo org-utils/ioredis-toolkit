@@ -30,29 +30,33 @@ The module uses the same Redis connection as the rest of the package. Do not cre
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the module. `redis.cache` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `cache` | Namespace: the first segment of every cache key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
-| `defaultTtl` | `number` | `300` | Default TTL in seconds. |
-| `maxValueBytes` | `number` | `1048576` | Maximum UTF-8 encoded JSON size. |
+| `defaultTtl` | `number` | `300` | Default TTL in seconds. A positive integer. |
+| `maxValueBytes` | `number` | `1048576` | Maximum UTF-8 encoded JSON size in bytes. A positive integer, at most `16777216` (16 MiB). |
+
+The namespace must not overlap another enabled module's: two namespaces overlap when they are equal or one is a `:`-delimited prefix of the other (`app` and `app:cache`). `createRedisClient()` and `withCache()` throw `RedisConfigurationError` for an overlapping namespace.
+
+`parseCacheConfig(input)` validates a configuration and returns the normalized `CacheConfig`, throwing `CacheError` with code `CACHE_CONFIGURATION` when it is invalid. `RedisCache`, `parseCacheConfig`, `CacheError` and the types `CacheConfig`, `CacheSetOptions`, `CacheResult` and `CacheErrorCode` are exported from both `ioredis-toolkit` and `ioredis-toolkit/cache`.
 
 ## 3. Methods
 
 ### `key(key)`
 
-Returns the physical Redis key. Example: `cache:user:42`.
+Returns the physical Redis key: the namespace, then the logical key.
 
 ```ts
-redis.cache.key('user:42');
+redis.cache.key('user:42'); // myapp:cache:user:42
 ```
 
 ### `get<T>(key)`
 
-Returns `{ hit, value }`. A miss returns `{ hit: false, value: null }`. A cached value that is not valid JSON (for example, written directly by another, non-conforming client) throws a typed `CacheError` (code `CACHE_SERIALIZATION`) rather than crashing with an uncaught `SyntaxError` or silently returning a miss.
+Returns a `CacheResult<T>`, `{ hit, value }`. A miss returns `{ hit: false, value: null }`. A cached value that is not valid JSON (for example, written directly by another, non-conforming client) throws a typed `CacheError` (code `CACHE_SERIALIZATION`) rather than crashing with an uncaught `SyntaxError` or silently returning a miss.
 
 ```ts
 import { CacheError } from 'ioredis-toolkit';
 
 try {
   const result = await redis.cache.get<User>('user:42');
-  if (result.hit) console.log(result.value.email);
+  if (result.hit && result.value !== null) console.log(result.value.email);
 } catch (error) {
   if (error instanceof CacheError) {
     // The stored value could not be decoded as JSON.
@@ -60,9 +64,11 @@ try {
 }
 ```
 
+`value` is typed `T | null` whether or not `hit` is `true`, so narrow on `value` itself before reading from it.
+
 ### `getValue<T>(key)`
 
-Convenience form returning the decoded value or `null`.
+Convenience form returning the decoded value or `null`. A cached JSON `null` also returns `null`; use `get()` when a miss and a stored `null` must be told apart.
 
 ```ts
 const user = await redis.cache.getValue<User>('user:42');
@@ -73,7 +79,7 @@ if (!user) {
 
 ### `set<T>(key, value, options?)`
 
-Stores a JSON value. `ttl` is in seconds. `nx` means create only when absent; `xx` means update only when present. `nx` and `xx` cannot both be true.
+Stores a JSON value. `options` is a `CacheSetOptions`. `ttl` is in seconds. `nx` means create only when absent; `xx` means update only when present. `nx` and `xx` cannot both be true. Every write sets an expiry, `ttl` when given and `defaultTtl` otherwise, so this module never writes a key that does not expire.
 
 ```ts
 await redis.cache.set('user:42', { id: '42', name: 'Anwar' }, { ttl: 600 });
@@ -141,17 +147,17 @@ const product = await redis.cache.getValue<Product>('product:1');
 
 ## 5. Serialization limits
 
-Values must be JSON-serializable. `undefined`, functions, symbols, cyclic structures, and values that cannot be represented by JSON are rejected. The encoded UTF-8 payload must not exceed `maxValueBytes`.
+Values are encoded with `JSON.stringify`. A value is rejected with `CACHE_SERIALIZATION` when encoding throws (a cyclic structure, or a `BigInt` anywhere in it) or produces nothing (`undefined`, a function or a symbol as the value itself). Anything else is encoded by JSON's own rules, without an error: inside an object, a property holding `undefined`, a function or a symbol is dropped; inside an array, such an element becomes `null`; `NaN` and `Infinity` become `null`; and a `Date` becomes its ISO string. `get()` then returns the encoded shape, not the value that was written. The encoded UTF-8 payload must not exceed `maxValueBytes`.
 
 ## 6. Errors
 
-Every error this module raises itself is a `CacheError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+Every error this module raises itself is a `CacheError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`, typed `CacheErrorCode`. A failure reported by Redis or the connection passes through as ioredis raised it.
 
 | Code | Thrown when |
 |---|---|
 | `CACHE_CONFIGURATION` | the cache configuration is invalid |
 | `CACHE_INPUT` | `set()` is given both `nx` and `xx`, or a `ttl` that is not a positive integer |
-| `CACHE_SERIALIZATION` | `set()` is given a value JSON cannot represent, or `get()` reads a value that is not valid JSON |
+| `CACHE_SERIALIZATION` | `set()` is given a value `JSON.stringify` throws on or encodes as nothing (see section 5), or `get()` reads a value that is not valid JSON |
 | `CACHE_LIMIT` | the encoded value exceeds `maxValueBytes` |
 
 ## 7. Per-client overrides
@@ -162,6 +168,8 @@ Global configuration can be merged or replaced:
 redis.withCache({ defaultTtl: 60 });
 // namespace and maxValueBytes remain unchanged.
 
-redis.withCache({ namespace: 'short-cache' }, 'replace');
+redis.withCache({ enabled: true, namespace: 'short-cache' }, 'replace');
 // Unspecified values return to module defaults.
 ```
+
+`'replace'` resets every option it is not given to its default, `enabled: false` included, so pass `enabled: true` or `redis.cache` throws `RedisConfigurationError` afterwards.

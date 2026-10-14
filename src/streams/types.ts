@@ -13,7 +13,7 @@ export class StreamsError extends RedisToolkitError {
 export interface StreamsConfig extends ModuleConfigBase {
   /** Approximate number of entries retained by the default `add()` trim operation. */
   maxEntries: number;
-  /** Default configured blocking duration in milliseconds for application policy. */
+  /** Blocking duration in milliseconds that `read()` uses when a call passes no `blockMs` of its own; 0 waits indefinitely. */
   blockMs: number;
 }
 

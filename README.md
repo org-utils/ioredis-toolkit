@@ -17,7 +17,9 @@ Every module can be configured in the same `createRedisClient()` call. Module co
 
 Each module defaults to `enabled: false`. Accessing a module's getter on the client (`redis.cache`, `redis.lock`, `redis.rateLimiter`, `redis.pubsub`, `redis.streams`, `redis.sessions`) throws while it is disabled — set `enabled: true` in that module's configuration to use it.
 
-`createRedisClient()` validates the whole configuration before it connects, and throws `RedisConfigurationError` on a mistake: an unknown `mode`, for example, or two enabled modules whose namespaces collide. Namespaces collide when they are equal or when one is a colon-delimited prefix of the other: `app` and `app:cache` collide, `app` and `application` do not. Without that rule one module could read, overwrite or clear another's keys, as `cache.clear()` on a namespace shared with sessions would. A disabled module's namespace is not checked. Each `with*()` call applies the same check. A call that would cause a collision throws and leaves the configuration in effect unchanged.
+`createRedisClient()` validates the whole configuration before it connects, and throws on a mistake. A connection configuration it cannot accept, an unknown `mode` for example, throws `RedisConfigurationError`. A module section that fails validation throws that module's own error with its configuration code: `CacheError` with `CACHE_CONFIGURATION`, `LockError` with `LOCK_CONFIGURATION`, `SessionConfigurationError` for sessions, and so on. Two enabled modules whose namespaces collide throw `RedisConfigurationError`. Namespaces collide when they are equal or when one is a colon-delimited prefix of the other: `app` and `app:cache` collide, `app` and `application` do not. Without that rule one module could read, overwrite or clear another's keys, as `cache.clear()` on a namespace shared with sessions would. A disabled module's namespace is not checked. Each `with*()` call applies the same checks. A call that would cause a collision throws and leaves the configuration in effect unchanged.
+
+A module given no `namespace` uses its default: `cache`, `lock`, `rate-limit`, `events` for Pub/Sub, `stream`, and `app` for sessions. Sessions enabled without a namespace therefore collide with any other enabled module under `app:`, such as `app:cache`.
 
 ```ts
 import { createRedisClient } from 'ioredis-toolkit';
@@ -41,6 +43,28 @@ const decision = await redis.rateLimiter.consume('user:42');
 await redis.pubsub.publish('orders.created', { orderId: '42' });
 await redis.streams.add('orders', { orderId: '42', type: 'created' });
 const session = await redis.sessions.create({ userId: '42' });
+```
+
+## Connection modes
+
+`mode` selects the topology: `standalone`, `sentinel` or `cluster`. It may be left out for standalone Redis. Every other connection option is passed to ioredis: `RedisOptions` for standalone and Sentinel, `ClusterOptions` for Cluster.
+
+```ts
+// Standalone, with `mode` left out.
+const standalone = createRedisClient({ host: '127.0.0.1', port: 6379 });
+
+// Sentinel: the sentinels to ask, and the name of the master they monitor.
+const sentinel = createRedisClient({
+  mode: 'sentinel',
+  sentinels: [{ host: '10.0.0.1', port: 26379 }, { host: '10.0.0.2', port: 26379 }],
+  name: 'mymaster',
+});
+
+// Cluster: the startup nodes.
+const cluster = createRedisClient({
+  mode: 'cluster',
+  nodes: [{ host: '10.0.0.1', port: 7000 }, { host: '10.0.0.2', port: 7000 }],
+});
 ```
 
 ## Shutdown and error visibility
@@ -76,14 +100,16 @@ redis
   .withSessions({ idleTimeout: 60 * 60 });
 ```
 
-Use `'replace'` when the module should start again from its defaults:
+Use `'replace'` when the module should start again from its defaults. Every option the call does not give is reset to its default, `enabled: false` included, so pass `enabled: true` to keep the module usable:
 
 ```ts
-redis.withCache({ namespace: 'temporary' }, 'replace');
-redis.withLock({ namespace: 'maintenance' }, 'replace');
+redis.withCache({ enabled: true, namespace: 'temporary' }, 'replace');
+redis.withLock({ enabled: true, namespace: 'maintenance' }, 'replace');
 ```
 
-`withLock()` is canonical; `withlock()` is provided as an alias.
+`withLock()` is canonical; `withlock()` is provided as an alias, and `withSession()` likewise for `withSessions()`. `redis.config` returns every module's normalized configuration as it is in effect.
+
+`withPubSub()` closes the subscriber connection it replaces, so while Pub/Sub has a live subscription it throws `PubSubError` with `PUBSUB_STATE` and keeps the configuration and subscriber in effect; unsubscribe first.
 
 ## Errors
 
@@ -101,7 +127,9 @@ try {
 }
 ```
 
-Each module has its own class under that base — `SessionError` and its subclasses, `CacheError`, `LockError`, `RateLimitError`, `PubSubError`, `StreamsError`, and `RedisConfigurationError` for the connection and for a module used while disabled — and its usage guide lists the codes it can report. A failure reported by Redis or the connection is wrapped as `SESSION_STORAGE` inside a session operation; in the convenience wrappers it passes through as ioredis raised it.
+Each module has its own class under that base — `SessionError` and its subclasses, `CacheError`, `LockError`, `RateLimitError`, `PubSubError`, `StreamsError`, and `RedisConfigurationError` for the connection configuration, for colliding namespaces and for a module other than sessions used while disabled — and its usage guide lists the codes it can report. Sessions used while disabled throw `SessionConfigurationError`.
+
+Inside a session operation, a failure reported by Redis or the connection is wrapped as `SESSION_STORAGE`, with two exceptions that pass it through as ioredis raised it: every Redis call `list()` makes, and in `revokeAll()` the read of the user's session set and a pipeline that fails as a whole. In the other modules it always passes through as ioredis raised it.
 
 ## Import paths
 
@@ -109,8 +137,8 @@ The root import carries the client facade and every public name. Each module als
 
 | Import | What it exports |
 | --- | --- |
-| `ioredis-toolkit` | `createRedisClient`, `RedisClient`, the connection configuration types, `RedisToolkitError`, and everything below |
-| `ioredis-toolkit/session` | `SessionManager`, `createSessionManager`, `createSessionManagerFromRedis`, `parseSessionConfig`, the cookie helpers, the `Session*Error` classes, and the session types |
+| `ioredis-toolkit` | `createRedisClient`, `RedisClient`, `RedisToolkitError`, `RedisConfigurationError`, `createRedisConnection`, `parseRedisConnectionConfig`, the client types (`RedisClientConfig`, `RedisClientDependencies`, `RedisErrorContext`, `RedisErrorSource`, `ModuleConfigMode`), the connection types (`RedisConfig` and its per-mode variants, `RedisMode`, `RedisConnection`, `RedisCommandClient`, `RedisPipeline`, `ClusterFanoutOptions`, `ModuleConfigBase`), and everything below |
+| `ioredis-toolkit/session` | `SessionManager`, `createSessionManager`, `createSessionManagerFromRedis`, `parseSessionConfig`, the cookie helpers, the `Session*Error` classes, the session types, and `RedisConfig` |
 | `ioredis-toolkit/cache` | `RedisCache`, `parseCacheConfig`, `CacheError`, and the cache types |
 | `ioredis-toolkit/lock` | `RedisLock`, `parseLockConfig`, `LockError`, and the lock types |
 | `ioredis-toolkit/rate-limit` | `RedisRateLimiter`, `parseRateLimitConfig`, `RateLimitError`, and the rate-limit types |
@@ -134,14 +162,17 @@ import { createSessionManagerFromRedis, type RedisConfig, type SessionConfig } f
 
 const connection: RedisConfig = { mode: 'standalone', host: '127.0.0.1', port: 6379 };
 const sessionConfig: Partial<SessionConfig> = { enabled: true, namespace: 'app:session' };
-const { manager } = createSessionManagerFromRedis(connection, sessionConfig);
+const { manager, redis, config } = createSessionManagerFromRedis(connection, sessionConfig);
+
+// On shutdown: the manager has no close() of its own.
+await redis.close();
 ```
 
-Both configurations are validated before anything connects, so a mistyped `mode` or disabled sessions throw and leave no connection behind. This factory takes no key manager, so it refuses a configuration with encryption enabled; use `createRedisClient` with an `encryptionKeyManager` for encrypted sessions.
+Both configurations are validated before anything connects, so a mistyped `mode` or disabled sessions throw and leave no connection behind. The factory returns the manager together with the connection it opened, `redis`, and the normalized session configuration, `config`; close the connection with `redis.close()`. This factory takes no key manager, so it refuses a configuration with encryption enabled; use `createRedisClient` with an `encryptionKeyManager` for encrypted sessions.
 
-Only these paths are importable; a file inside `dist/` is not.
+Only these paths and `ioredis-toolkit/package.json` are importable; a file inside `dist/` is not.
 
-What these paths export is the whole public surface: the client facade and the connection types, the module classes, their configuration, input and result types, the cookie helpers, the error hierarchy and its code unions, the factory functions and the `parse*Config` functions. Everything else is internal and may change in any release: the classes the client facade constructs on your behalf (the session repository, service, serializer, key strategy, token manager and script registry, and the Redis command wrapper), the validation schema objects, and the cluster hash-slot helpers. A module is obtained from `createRedisClient` or a session factory function, never constructed directly.
+What these paths export is the whole public surface: the client facade and the connection types, the module classes, their configuration, input and result types, the cookie helpers, the error hierarchy and its code unions, the factory functions and the `parse*Config` functions. `RedisClient` extends the package's Redis command wrapper, so every method of `RedisCommandClient` is public on the client: raw commands such as `get`, `set`, `del`, `eval` and `pipeline`, `duplicateConnection()`, and the cluster-aware `mgetClusterAware()`, `scanCluster()` and `deletePatternClusterAware()`. They run on the shared connection as given, outside every module's namespace and validation. Everything else is internal and may change in any release: the classes the client facade constructs on your behalf (the session repository, service, serializer, key strategy, token manager and script registry), the wrapper class itself, which is not exported by name, the validation schema objects, and the cluster hash-slot helpers. A module is obtained from `createRedisClient` or a session factory function, never constructed directly.
 
 ## Documentation
 
@@ -159,14 +190,14 @@ Additional architecture and operations documentation is in `docs/`.
 ## Installation
 
 ```bash
-npm install ioredis-toolkit ioredis zod
+npm install ioredis-toolkit
 ```
 
-The package is ESM-only and requires Node.js 22 or newer.
+`ioredis` and `zod` are dependencies of the package and are installed with it. The package is ESM-only and requires Node.js 22 or newer.
 
 ## Development
 
-This repo uses [Bun](https://bun.sh) for dependency installation and scripts; the committed `bun.lock` is the source of truth.
+This repo uses [Bun](https://bun.sh) for dependency installation and scripts; the committed `bun.lock` is the source of truth, and CI installs from it with `bun install --frozen-lockfile`. The `pnpm-lock.yaml` also committed is not used by CI.
 
 ```bash
 bun install

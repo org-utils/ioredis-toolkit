@@ -23,11 +23,15 @@ const redis = createRedisClient({
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the module. `redis.pubsub` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `events` | Namespace: the first segment of every channel name. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
-| `maxMessageBytes` | `number` | `1048576` | Maximum encoded JSON message size. |
+| `maxMessageBytes` | `number` | `1048576` | Maximum UTF-8 encoded JSON message size in bytes. A positive integer, at most `16777216` (16 MiB). |
+
+The namespace must not overlap another enabled module's: two namespaces overlap when they are equal or one is a `:`-delimited prefix of the other (`myapp` and `myapp:events`). `createRedisClient()` and `withPubSub()` throw `RedisConfigurationError` for an overlapping namespace.
+
+`parsePubSubConfig(input)` validates a configuration and returns the normalized `PubSubConfig`, throwing `PubSubError` with code `PUBSUB_CONFIGURATION` when it is invalid. `RedisPubSub`, `parsePubSubConfig`, `PubSubError` and the types `PubSubConfig`, `PubSubMessage`, `Subscription` and `PubSubErrorCode` are exported from both `ioredis-toolkit` and `ioredis-toolkit/pubsub`.
 
 ## Resilience
 
-The dedicated subscriber connection has a default `'error'` listener attached automatically, so a connection drop, auth failure, or network error on it can no longer crash the process with an uncaught exception. The listener forwards each error to the client's `onError` hook with source `subscriber`; see the README's "Shutdown and error visibility".
+The dedicated subscriber connection has a default `'error'` listener attached automatically, so a connection drop, auth failure, or network error on it never crashes the process with an uncaught exception. The listener forwards each error to the client's `onError` hook with source `subscriber`; see [Shutdown and error visibility](../../../README.md#shutdown-and-error-visibility) in the README.
 
 Each handler call is isolated. A handler that throws, or an async handler whose promise rejects, is reported to the `onError` hook with source `pubsub-handler` and the logical `channel`, and the other handlers on that channel still receive the message. A rejection never surfaces as an unhandled rejection, which would end a Node 22 process.
 
@@ -38,6 +42,8 @@ Repeated `subscribe()` calls for the same physical channel issue a single underl
 ## `publish<T>(channel, value)`
 
 JSON-encodes a value and publishes it. The return value is Redis's subscriber count at publication time.
+
+The value is encoded with `JSON.stringify`. It is rejected with `PUBSUB_SERIALIZATION` when encoding throws (a cyclic structure, or a `BigInt` anywhere in it) or produces nothing (`undefined`, a function or a symbol as the value itself). Anything else is encoded by JSON's own rules, without an error: inside an object, a property holding `undefined`, a function or a symbol is dropped; inside an array, such an element becomes `null`; `NaN` and `Infinity` become `null`; and a `Date` becomes its ISO string. Subscribers receive the encoded shape, not the value that was published.
 
 On Redis Cluster that count covers only the clients subscribed through the node that took the `PUBLISH`. The message still reaches subscribers on every node, so a count of 0 does not mean nobody received it.
 
@@ -102,12 +108,12 @@ Use Pub/Sub when losing messages while nobody is listening is acceptable and low
 
 ## Errors
 
-Every error this module raises itself is a `PubSubError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+Every error this module raises itself is a `PubSubError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`, typed `PubSubErrorCode`. A failure reported by Redis or the connection passes through as ioredis raised it.
 
 | Code | Thrown when |
 |---|---|
 | `PUBSUB_CONFIGURATION` | the Pub/Sub configuration is invalid |
-| `PUBSUB_SERIALIZATION` | `publish()` is given a value JSON cannot represent. Also reported to the `onError` hook, never thrown, for a received message that is not JSON |
+| `PUBSUB_SERIALIZATION` | `publish()` is given a value `JSON.stringify` throws on or encodes as nothing (see `publish()`). Also reported to the `onError` hook, never thrown, for a received message that is not JSON |
 | `PUBSUB_LIMIT` | the encoded message exceeds `maxMessageBytes` |
 | `PUBSUB_STATE` | `withPubSub()` is called while a subscription is live |
 
@@ -115,7 +121,9 @@ Every error this module raises itself is a `PubSubError`, which extends the pack
 
 ```ts
 redis.withPubSub({ namespace: 'critical' });
-redis.withPubSub({ maxMessageBytes: 256 * 1024 }, 'replace');
+redis.withPubSub({ enabled: true, maxMessageBytes: 256 * 1024 }, 'replace');
 ```
+
+`'replace'` resets every option it is not given to its default, `enabled: false` included, so pass `enabled: true` or `redis.pubsub` throws `RedisConfigurationError` afterwards. The `'replace'` example above also returns the namespace to `events`.
 
 Reconfiguring Pub/Sub replaces the subscriber connection and closes the old one. So that this never silently drops a listener, `withPubSub()` throws `PubSubError` with code `PUBSUB_STATE` while any subscription is live, including one still being confirmed, and leaves the configuration and the subscriptions in effect. Unsubscribe them first, then reconfigure.

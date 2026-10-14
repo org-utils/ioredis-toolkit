@@ -23,10 +23,12 @@ const redis = createRedisClient({
 |---|---|---:|---|
 | `enabled` | `boolean` | `false` | Enables the module. `redis.lock` throws `RedisConfigurationError` while disabled. |
 | `namespace` | `string` | `lock` | Namespace: the first segment of every lock key. Letters, digits, `:`, `_` and `-` only, at most 128 characters. |
-| `defaultTtl` | `number` | `30` | Default lease in seconds. Must not exceed `maxTtl`. |
-| `maxTtl` | `number` | `300` | Maximum permitted lease. |
+| `defaultTtl` | `number` | `30` | Default lease in seconds. A positive integer. Must not exceed `maxTtl`. |
+| `maxTtl` | `number` | `300` | Maximum permitted lease in seconds. A positive integer. |
 
-`parseLockConfig()` rejects a configuration where `defaultTtl > maxTtl` at config-parse time, instead of letting every `acquire()`/`extend()` call using the default TTL throw later.
+The namespace must not overlap another enabled module's: two namespaces overlap when they are equal or one is a `:`-delimited prefix of the other (`app` and `app:locks`). `createRedisClient()` and `withLock()` throw `RedisConfigurationError` for an overlapping namespace.
+
+`parseLockConfig()` rejects a configuration where `defaultTtl > maxTtl` at config-parse time, instead of letting every `acquire()`/`extend()` call using the default TTL throw later. It returns the normalized `LockConfig`, and throws `LockError` with code `LOCK_CONFIGURATION` for an invalid one. `RedisLock`, `parseLockConfig`, `LockError` and the types `LockConfig`, `LockAcquireResult` and `LockErrorCode` are exported from both `ioredis-toolkit` and `ioredis-toolkit/lock`.
 
 ## Methods
 
@@ -35,12 +37,12 @@ const redis = createRedisClient({
 Builds the physical lock key.
 
 ```ts
-redis.lock.key('order:123'); // lock:order:123
+redis.lock.key('order:123'); // myapp:locks:order:123
 ```
 
 ### `acquire(name, ttl?)`
 
-Attempts an atomic `SET ... NX PX`. The returned token proves ownership and must be treated as a secret.
+Attempts an atomic `SET ... NX PX`. `ttl` is in seconds and may be fractional, down to whole milliseconds. Returns a `LockAcquireResult`, `{ acquired, token }`. The returned token proves ownership and must be treated as a secret. A token is returned even when `acquired` is `false`; it is a fresh one that owns nothing.
 
 ```ts
 const result = await redis.lock.acquire('order:123', 15);
@@ -56,7 +58,7 @@ try {
 
 ### `release(name, token)`
 
-Deletes the lock only if the current Redis value equals the supplied ownership token. This prevents an expired lock from being deleted by a previous owner.
+Deletes the lock only if the current Redis value equals the supplied ownership token. This prevents an expired lock from being deleted by a previous owner. Returns `true` when it deleted the lock and `false` when the token no longer owned it.
 
 ```ts
 const lock = await redis.lock.acquire('invoice:42');
@@ -65,7 +67,7 @@ if (lock.acquired) await redis.lock.release('invoice:42', lock.token);
 
 ### `extend(name, token, ttl?)`
 
-Atomically extends the lease only for the current owner.
+Atomically resets the lease to `ttl` seconds from now, only for the current owner. It does not add to the time left: extending a lock with 5 seconds left by 20 leaves 20. Returns `true` when the token still owned the lock and `false` otherwise.
 
 ```ts
 const lock = await redis.lock.acquire('long-job', 20);
@@ -91,7 +93,7 @@ const result = await redis.lock.using('report:daily', async token => {
 }, 60);
 ```
 
-If acquisition fails, `using()` throws a `LockError` with code `LOCK_HELD` instead of executing the callback.
+If acquisition fails, `using()` throws a `LockError` with code `LOCK_HELD` instead of executing the callback. A TTL that `acquire()` would reject throws `LOCK_INPUT` or `LOCK_LIMIT` the same way, before anything is sent.
 
 ## Important semantics
 
@@ -103,18 +105,20 @@ There is no fencing token. The ownership token `acquire()` returns is random, no
 
 ## Errors
 
-Every error this module raises itself is a `LockError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`. A failure reported by Redis or the connection passes through as ioredis raised it.
+Every error this module raises itself is a `LockError`, which extends the package-wide `RedisToolkitError` and carries a stable `code`, typed `LockErrorCode`. A failure reported by Redis or the connection passes through as ioredis raised it.
 
 | Code | Thrown when |
 |---|---|
 | `LOCK_CONFIGURATION` | the lock configuration is invalid |
-| `LOCK_INPUT` | `acquire()` or `extend()` is given a TTL that is not a finite positive number (including `NaN`), or is not a whole number of milliseconds (such as `0.0001`), checked before anything is sent |
-| `LOCK_LIMIT` | `acquire()` or `extend()` is given a TTL longer than `maxTtl` |
+| `LOCK_INPUT` | `acquire()`, `extend()` or `using()` is given a TTL that is not a finite positive number (including `NaN`), or is not a whole number of milliseconds (such as `0.0001`), checked before anything is sent |
+| `LOCK_LIMIT` | `acquire()`, `extend()` or `using()` is given a TTL longer than `maxTtl` |
 | `LOCK_HELD` | `using()` finds the lock already held |
 
 ## Overrides
 
 ```ts
 redis.withLock({ defaultTtl: 10, maxTtl: 60 });
-redis.withLock({ namespace: 'maintenance' }, 'replace');
+redis.withLock({ enabled: true, namespace: 'maintenance' }, 'replace');
 ```
+
+`'replace'` resets every option it is not given to its default, `enabled: false` included, so pass `enabled: true` or `redis.lock` throws `RedisConfigurationError` afterwards. `withlock()` is an alias of `withLock()`.

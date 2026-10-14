@@ -23,6 +23,9 @@ const redis = createRedisClient({
     securityVersionEnabled: true,
     maxSessionsPerUser: 20,
     maxMetadataBytes: 8192,
+    storeIpAddress: true,
+    storeUserAgent: true,
+    storeDeviceId: true,
   },
 });
 
@@ -39,6 +42,17 @@ const redis = createRedisClient(
 ```
 
 Sessions must be explicitly enabled. Creating the client does not require session initialization until `redis.sessions` is accessed.
+
+Without the unified client, `createSessionManagerFromRedis(redisConfig, sessionConfig)` validates both configurations before connecting and returns `{ manager, redis, config }`. It takes no key manager, so it refuses a configuration with `encryption.enabled`.
+
+```ts
+import { createSessionManagerFromRedis } from 'ioredis-toolkit/session';
+
+const { manager: sessions } = createSessionManagerFromRedis(
+  { mode: 'standalone', host: '127.0.0.1', port: 6379 },
+  { enabled: true },
+);
+```
 
 ## Configuration
 
@@ -60,11 +74,13 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `storeIpAddress` | `boolean` | false | Persists IP metadata when enabled. |
 | `storeUserAgent` | `boolean` | false | Persists user-agent metadata when enabled. |
 | `storeDeviceId` | `boolean` | false | Persists device ID metadata when enabled. |
-| `encryption.enabled` | `boolean` | false | Enables authenticated encryption for serialized session values when a key manager is supplied. |
+| `encryption.enabled` | `boolean` | false | Enables AES-256-GCM authenticated encryption of stored session records. Requires a key manager: without one, constructing the manager throws `SessionConfigurationError`. |
 | `circuitBreaker` | object | see below | **Deprecated, and has no effect.** The package has no circuit breaker. The section is still accepted and validated so that existing configuration keeps parsing, and will be removed in the next major version. |
 | `cookie` | object | secure defaults | The cookie `sessions.cookie()` and `sessions.deletionCookie()` serialize: `name`, `httpOnly`, `secure`, `sameSite`, `domain`, `path` and an optional `maxAge`. See [Cookie helpers](#cookie-helpers). |
 
 `circuitBreaker` defaults to `{ enabled: false, failureThreshold: 5, resetTimeoutMs: 10_000, halfOpenMaxRequests: 1 }` and, like `encryption` and `cookie`, may be omitted entirely.
+
+Durations are whole seconds. Upper bounds: `tokenBytes` 128, `maxSessionsPerUser` 1000, `maxMetadataBytes` 65536, `maxBatchSize` 1000, `maxConcurrency` 64. `idleTimeout` and `ttl` must not exceed `absoluteTimeout`, and `cookie.sameSite: 'none'` requires `cookie.secure`. A configuration that breaks any of these throws `SessionConfigurationError`.
 
 ## `create(input)`
 
@@ -73,6 +89,7 @@ Creates a session and returns the raw opaque token exactly once.
 ```ts
 const created = await sessions.create({
   userId: 'user_123',
+  securityVersion: 1,
   deviceId: 'device_1',
   ipAddress: '203.0.113.10',
   userAgent: 'Mozilla/5.0',
@@ -85,6 +102,8 @@ console.log(created.session.id, created.session.expiresAt);
 ```
 
 The token is an opaque credential composed of a random JTI and random secret. The authoritative Redis session record does not contain the raw token.
+
+`securityVersion` is required while `securityVersionEnabled` is on; see [`setSecurityVersion`](#setsecurityversionuserid-version). `ttl`, `idleTimeout` and `absoluteTimeout` may also be passed to override the configured values for this one session. A `ttl` longer than the session's `absoluteTimeout` throws `SessionInvalidError`.
 
 ## `validate(token)`
 
@@ -143,14 +162,15 @@ const updated = await sessions.update(token, {
 
 ## `rotate(token)`
 
-Consumes the predecessor and creates a successor token atomically within the session's Redis hash-tag slot.
+Consumes the predecessor, then creates its successor. The consume is atomic within the session's Redis hash-tag slot; creating the successor is a separate step.
 
 ```ts
 const rotated = await sessions.rotate(token);
 // Replace the client cookie with rotated.token.
+// rotated.session is the successor; rotated.previousJti is the consumed predecessor's JTI.
 ```
 
-After successful rotation, the predecessor is no longer accepted. Concurrent rotation attempts must not produce multiple valid successors. The successor's rolling idle-timeout window preserves the duration originally configured when the session (or its earliest ancestor) was created, rather than being re-derived from the predecessor's most recent touch — so the idle window does not silently shrink across repeated rotations. If the predecessor is consumed but successor creation then fails, `rotate()` throws `SessionRotationError` rather than leaving the caller with an ambiguous storage error. This is also what a rotation sees when the credential it rotates is revoked through a predecessor's credential while it is in flight: the revocation takes the successor's place, so a logout during rotation still logs out.
+After successful rotation, the predecessor is no longer accepted. Concurrent rotation attempts must not produce multiple valid successors. The successor's rolling idle-timeout window preserves the duration originally configured when the session (or its earliest ancestor) was created, rather than being re-derived from the predecessor's most recent touch — so the idle window does not silently shrink across repeated rotations. If the predecessor is consumed but successor creation then fails, `rotate()` throws `SessionRotationError` rather than leaving the caller with an ambiguous storage error. This is also what a rotation sees when its session is revoked while it is in flight, through its own credential or a predecessor's: either the revocation lands first and the session can no longer be consumed, or it takes the successor's place. So a logout during rotation still logs out.
 
 ## `revoke(token)`
 
@@ -160,9 +180,9 @@ Marks a session unusable.
 await sessions.revoke(token);
 ```
 
-Revocation is idempotent from the application's perspective. `revoke()` (and rotation's internal predecessor `consume()`) remove the session from the user's session set immediately rather than only relying on `list()`'s lazy self-heal, so a revoked/rotated session stops counting toward `maxSessionsPerUser` right away instead of only once its tombstone expires.
+Revocation is idempotent from the application's perspective. `revoke()` (and rotation's internal predecessor `consume()`) remove the session from the user's session set immediately rather than only relying on `list()`'s lazy self-heal, so a revoked or consumed session stops counting toward `maxSessionsPerUser` right away instead of only once its tombstone expires.
 
-A revoked or rotated session's record is kept as a tombstone for the rest of its lifetime, capped at 300 seconds. Its token locator, the key that maps the credential to its user, is cut to expire with the tombstone. While the tombstone lasts, a rotated credential presented again validates as `consumed` (and `rotate()` throws `SessionReplayError`), and a revoked one as `revoked`. Once the tombstone has expired, both validate as `not_found` and none of their keys remain, however often a session is rotated.
+A revoked or consumed session's record is kept as a tombstone for the rest of its lifetime, capped at 300 seconds. Its token locator, the key that maps the credential to its user, is cut to expire with the tombstone. While the tombstone lasts, a consumed credential presented again validates as `consumed` (and `rotate()` throws `SessionReplayError`), and a revoked one as `revoked`. Once the tombstone has expired, both validate as `not_found` and none of their keys remain, however often a session is rotated.
 
 `revoke()` given a credential that rotation already consumed ends its successor, the session that replaced it: it follows the rotation chain to its end and revokes the session there, if that one is still active. So a user logging out with a stale cookie is logged out. The consumed credential itself is left as it is, so it keeps validating as `consumed`, and `rotate()` on it keeps throwing `SessionReplayError`. Replay on its own ends no session, because two requests that rotate concurrently look the same as a stolen credential. To end every session of a user when you see `SessionReplayError`, call `revokeAll()`, or `setSecurityVersion()` with `securityVersionEnabled`.
 
@@ -174,11 +194,11 @@ Permanently removes the session record, its token locator and its member of the 
 await sessions.destroy(token);
 ```
 
-Use `revoke()` when you need an explicit invalidation state; use `destroy()` when removing stored session data is preferable.
+Use `revoke()` when the credential should keep reporting why it cannot authenticate, through its tombstone; use `destroy()` when removing stored session data is preferable.
 
 ## `setSecurityVersion(userId, version)`
 
-Sets a per-user security version when the feature is enabled. Sessions carrying an older version fail authentication.
+Stores a per-user security version. It is stored whether or not `securityVersionEnabled` is on, but only checked while it is on, and then sessions carrying an older version fail authentication.
 
 A security version is a whole number of at least 0. `setSecurityVersion()`, and `create()` when given a `securityVersion`, throw `SessionInvalidError` (`SESSION_INVALID`) for any other value, such as `-1`, `1.5` or `NaN`, and store nothing.
 
@@ -194,7 +214,7 @@ The stored version expires with the user's sessions. It lives as long as the use
 
 ## `revokeAll(userId, limit?)`
 
-Revokes a bounded batch and returns `{ affected, remaining }` so a large session set does not require loading every session into memory. The revoked sessions are deleted outright, so their credentials then validate as `not_found`. It works the same on standalone Redis and on Cluster.
+Ends a bounded batch of the user's sessions and returns `{ affected, remaining }` so a large session set does not require loading every session into memory. Despite its name, it destroys rather than revokes them: they are deleted outright, with no tombstone, so their credentials then validate as `not_found`. A `limit` greater than `maxBatchSize` is capped at `maxBatchSize` without error. It works the same on standalone Redis and on Cluster.
 
 ```ts
 let page = await sessions.revokeAll('user_123', 200);
@@ -207,7 +227,7 @@ Use bounded loops or background jobs for users with unusually large session coun
 
 ## `list(userId, offset?, limit?)`
 
-Returns a bounded page of an application user's sessions. A session past any of its expiries (hard, idle or absolute), measured in Redis server time, is left out, so the page lists only sessions that can still authenticate. A page can therefore hold fewer than `limit` sessions while more remain.
+Returns a bounded page of an application user's sessions. A session past any of its expiries (hard, idle or absolute), measured in Redis server time, is left out, so a page can hold fewer than `limit` sessions while more remain. Expiry is the only filter: a page can include a session that cannot authenticate for another reason, such as one carrying an older security version than the user's, or a consumed or revoked tombstone whose removal from the user's session set was interrupted.
 
 A member of the user's session set whose record is gone is removed from the set. A record that cannot be decoded, for example because the key manager lacks the key version it was encrypted under, is left out of the page but stays in the set and in Redis.
 
@@ -222,7 +242,7 @@ This is an administrative/management operation, not an authentication primitive.
 The session manager serializes the cookie its `cookie` configuration describes:
 
 ```ts
-const { token, session } = await sessions.create({ userId: 'user_123' });
+const { token, session } = await sessions.create({ userId: 'user_123', securityVersion: 1 });
 response.setHeader('Set-Cookie', await sessions.cookie(token, session));
 
 // On sign-out:
@@ -264,15 +284,15 @@ All typed errors extend `SessionError`, which extends the package-wide `RedisToo
 
 | Class | Code | Thrown by |
 |---|---|---|
-| `SessionNotFoundError` | `SESSION_NOT_FOUND` | `get()` when the token resolves to no record |
-| `SessionExpiredError` | `SESSION_EXPIRED` | `get()`/`touch()`/`rotate()` on an expired/idle-timed-out session |
-| `SessionRevokedError` | `SESSION_REVOKED` | `get()` on a revoked session |
-| `SessionReplayError` | `SESSION_REPLAY` | `rotate()` on a non-active (already consumed/revoked) session |
-| `SessionRotationError` | `SESSION_ROTATION` | `rotate()` when the predecessor was already consumed, cannot be rotated, or the successor could not be created after the predecessor was consumed |
+| `SessionNotFoundError` | `SESSION_NOT_FOUND` | `get()`/`touch()`/`update()`/`rotate()` when the token resolves to no record |
+| `SessionExpiredError` | `SESSION_EXPIRED` | `get()`/`touch()`/`update()`/`rotate()` on a session past its hard, idle or absolute expiry |
+| `SessionRevokedError` | `SESSION_REVOKED` | `get()`/`touch()`/`update()`/`rotate()` on a revoked session |
+| `SessionReplayError` | `SESSION_REPLAY` | `get()`/`touch()`/`update()`/`rotate()` given a consumed session's credential (replay), and `rotate()` when a concurrent rotation consumed the session first |
+| `SessionRotationError` | `SESSION_ROTATION` | `rotate()` when the session was revoked, expired or gone by the time it was to be consumed, or the successor could not be created after the predecessor was consumed, including when a revocation took the successor's place |
 | `SessionConflictError` | `SESSION_CONFLICT` | `update()` on a stale `expectedVersion` |
 | `SessionLimitError` | `SESSION_LIMIT` | `list()` when `limit` exceeds `maxBatchSize` |
 | `SessionInvalidError` | `SESSION_INVALID` | malformed input, or a session that fails a session set or security-version check |
-| `SessionStorageError` | `SESSION_STORAGE` | Redis-level read/write failures |
+| `SessionStorageError` | `SESSION_STORAGE` | Redis-level read/write failures; a compare-and-set that loses 32 times in a row; and `update()` (`Session update failed`) when the session is revoked, consumed, expired or removed between its read and its write |
 | `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read. `validate()` throws it too. The record is never deleted, so restoring the key manager or encryption setting makes the session usable again |
 | `SessionConfigurationError` | `SESSION_CONFIGURATION` | invalid session configuration, or constructing the manager while `enabled: false` |
 | `SessionInputError` | `SESSION_INPUT` | `serializeCookie()`/`serializeDeletionCookie()` (and so `cookie()`/`deletionCookie()`) given an invalid cookie name, a `Domain` or `Path` containing `;`, a control character or whitespace, or `SameSite=None` without `Secure` |
@@ -281,13 +301,13 @@ All typed errors extend `SessionError`, which extends the package-wide `RedisToo
 
 ## Metrics
 
-The session manager accepts an optional `metrics: SessionMetrics` sink (via `createSessionManager({ ..., metrics })` or `createRedisClient(config, { metrics })`) and records nothing when none is supplied. When configured, it receives `increment()` calls for `session.created`, `session.validate` (labeled `result: 'valid' | 'invalid'`, plus `reason` on the invalid path), `session.rotated`, `session.revoked`, and `session.destroyed`.
+The session manager accepts an optional `metrics: SessionMetrics` sink (via `createSessionManager({ ..., metrics })` or `createRedisClient(config, { metrics })`) and records nothing when none is supplied. When configured, it receives `increment()` calls for `session.created`, `session.validate` (labeled `result: 'valid' | 'invalid'`, plus `reason` on the invalid path), `session.rotated`, `session.revoked`, and `session.destroyed`. `session.validate` is recorded on every validation, so `get()`, `touch()`, `update()` and `rotate()` each record one as well.
 
 ## Unified configuration overrides
 
 ```ts
 redis.withSessions({ idleTimeout: 60 * 60 });
-redis.withSessions({ namespace: 'auth:v2', rolling: false }, 'replace');
+redis.withSessions({ enabled: true, namespace: 'auth:v2', rolling: false }, 'replace');
 ```
 
-`merge` preserves existing normalized values; `replace` applies the supplied values on top of module defaults.
+`merge` preserves existing normalized values; `replace` applies the supplied values on top of module defaults, so every option it is not given goes back to its default, including `enabled: false`. Pass `enabled: true` with `replace` to keep sessions on.

@@ -1,8 +1,6 @@
-# Architecture Decision Record
+# Architecture
 
-## Status
-
-Accepted for the initial implementation.
+An overview of how the package is built and why. The individual decisions are recorded as ADRs in [`docs/adr/`](https://github.com/org-utils/ioredis-toolkit/tree/main/docs/adr), which are kept in the repository and not shipped in the npm package.
 
 ## Decision: create the package and Redis infrastructure from scratch
 
@@ -46,7 +44,7 @@ The package does not claim rotation idempotency. Network-timeout retry must be h
 
 Redis TIME is used for authentication/session timestamps to reduce application-clock ordering problems. TTLs remain Redis storage cleanup boundaries; application expiration fields remain authoritative for session validity.
 
-The same clock buckets rate-limit windows. The rate limiter, and the session service outside validation, read it through the kernel's `RedisClock`; validation reads `TIME` inside the same-slot script that reads the record, which is the same server time at no extra round trip; [ADR-0002](https://github.com/org-utils/ioredis-toolkit/blob/main/docs/adr/0002-redis-server-time-is-authoritative.md) records the rule and the one exception, local timing of a duration inside a single process.
+The same clock buckets rate-limit windows. The session service outside validation reads it through the kernel's `RedisClock`. Validation reads `TIME` inside the same-slot script that reads the record, and the rate limiter inside each of its scripts, which is the same server time at no extra round trip; [ADR-0002](https://github.com/org-utils/ioredis-toolkit/blob/main/docs/adr/0002-redis-server-time-is-authoritative.md) records the rule and the one exception, local timing of a duration inside a single process.
 
 ## Decision: bounded maintenance
 
@@ -64,4 +62,4 @@ The low-level Redis client already owns connection/reconnect behavior. A circuit
 
 ## Decision: module `enabled` flags are enforced uniformly
 
-Every module config (`cache`, `lock`, `rateLimit`, `pubsub`, `streams`, `sessions`) exposes an `enabled` flag defaulting to `false`. `RedisClient`'s lazy getters (`.cache`, `.lock`, `.rateLimiter`, `.pubsub`, `.streams`, `.sessions`) throw a configuration error while the corresponding module is disabled. The client facade and the session factory functions are the only supported way to obtain a module (ADR-0003), and `createSessionManager` rejects a disabled session configuration with a `SessionConfigurationError`, so the flag gates every supported path to a module.
+Every module config (`cache`, `lock`, `rateLimit`, `pubsub`, `streams`, `sessions`) exposes an `enabled` flag defaulting to `false`. `RedisClient`'s lazy getters (`.cache`, `.lock`, `.rateLimiter`, `.pubsub`, `.streams`, `.sessions`) throw a configuration error while the corresponding module is disabled. The client facade and the session factory functions are the only supported way to obtain a module ([ADR-0003](https://github.com/org-utils/ioredis-toolkit/blob/main/docs/adr/0003-facade-only-public-surface.md)), and `createSessionManager` rejects a disabled session configuration with a `SessionConfigurationError`, so the flag gates every supported path to a module.
