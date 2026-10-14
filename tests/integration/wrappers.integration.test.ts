@@ -21,7 +21,7 @@ describeOnEachTopology('convenience wrappers against real Redis', redis => {
     await redis.connectClient({ rateLimit: { enabled: true, namespace } }).rateLimiter.consume('a');
     const keys = await redis.keysUnder(namespace);
     expect(keys).toHaveLength(1);
-    expect(keys[0]).toMatch(new RegExp(`^${namespace}:a:\\d+$`));
+    expect(keys[0]).toMatch(new RegExp(`^${namespace}:\\{a\\}:\\d+$`));
   });
 
   it('writes a stream under the streams namespace', async () => {

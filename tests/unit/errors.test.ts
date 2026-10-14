@@ -47,6 +47,7 @@ describe('error codes', () => {
 
     { code: 'RATE_LIMIT_CONFIGURATION', type: RateLimitError, condition: 'an invalid rate-limit configuration', operation: () => parseRateLimitConfig({ windowSeconds: 0 }) },
     { code: 'RATE_LIMIT_INPUT', type: RateLimitError, condition: 'a rate-limit cost that is not a positive integer', operation: () => offlineClient({ rateLimit: { enabled: true } }).rateLimiter.consume('subject', 0) },
+    { code: 'RATE_LIMIT_INPUT', type: RateLimitError, condition: 'a rate-limit subject that would leave its hash tag empty', operation: () => offlineClient({ rateLimit: { enabled: true } }).rateLimiter.consume('}subject') },
 
     { code: 'PUBSUB_CONFIGURATION', type: PubSubError, condition: 'an invalid Pub/Sub configuration', operation: () => parsePubSubConfig({ maxMessageBytes: 0 }) },
     { code: 'PUBSUB_SERIALIZATION', type: PubSubError, condition: 'a published value JSON cannot represent', operation: () => offlineClient({ pubsub: { enabled: true } }).pubsub.publish('channel', undefined) },
