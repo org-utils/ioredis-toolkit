@@ -1,5 +1,5 @@
 import type { Cluster, Redis } from 'ioredis';
-import { KeyStrategy, closeConnection, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
+import { KeyStrategy, closeConnection, connectionClosedError, reportConnectionErrors, type ErrorReporter, type RedisClientWrapper } from '../redis/index.js';
 import { PubSubError, type PubSubConfig, type PubSubMessage, type Subscription } from './types.js';
 
 /** A handler as registered: given the decoded value, it delivers the message. */
@@ -10,13 +10,15 @@ interface Channel { logical: string; handlers: Set<Handler>; subscribed: Promise
 
 /** JSON Pub/Sub abstraction using a dedicated subscriber connection. */
 export class RedisPubSub {
-  private readonly subscriber: Redis | Cluster;
+  /** The dedicated subscriber connection, opened by the first subscribe. */
+  private subscriberConnection: Redis | Cluster | undefined;
+  private closed = false;
   private readonly channels = new Map<string, Channel>();
   private readonly keys: KeyStrategy;
   /**
-   * Creates a Pub/Sub module on a duplicate of the shared connection. Errors on that connection, and every failure of a
-   * handler, go to `report` and never crash the process. `onLiveChange` is told whether any subscription is live each
-   * time that changes.
+   * Creates a Pub/Sub module whose subscriptions run on a duplicate of the shared connection, opened by the first
+   * subscribe. Errors on that connection, and every failure of a handler, go to `report` and never crash the process.
+   * `onLiveChange` is told whether any subscription is live each time that changes.
    */
   constructor(
     private readonly redis: RedisClientWrapper,
@@ -25,9 +27,6 @@ export class RedisPubSub {
     private readonly onLiveChange: (live: boolean) => void = () => undefined,
   ) {
     this.keys = new KeyStrategy(config.namespace);
-    this.subscriber = redis.duplicateConnection();
-    reportConnectionErrors(this.subscriber, report, 'subscriber');
-    this.subscriber.on('message', (channel: string, message: string) => this.deliver(channel, message));
   }
   /** Publishes a JSON value to a namespaced channel and returns subscriber count. */
   async publish<T>(channel: string, value: T): Promise<number> {
@@ -70,13 +69,24 @@ export class RedisPubSub {
       },
     };
   }
-  /** Closes the dedicated subscriber connection. Idempotent. */
+  /** Closes the dedicated subscriber connection, if a subscribe opened one; a subscribe afterwards rejects. Idempotent. */
   async close(): Promise<void> {
-    await closeConnection(this.subscriber);
+    this.closed = true;
+    if (this.subscriberConnection) await closeConnection(this.subscriberConnection);
     if (this.channels.size) { this.channels.clear(); this.onLiveChange(false); }
   }
   /** Returns the physical namespaced channel. */
   fullChannel(channel: string): string { return this.keys.key(channel); }
+
+  /** The subscriber connection, opened on first use. Once this module is closed it throws instead of opening one. */
+  private get subscriber(): Redis | Cluster {
+    if (this.subscriberConnection) return this.subscriberConnection;
+    if (this.closed) throw connectionClosedError();
+    const subscriber = this.redis.duplicateConnection();
+    reportConnectionErrors(subscriber, this.report, 'subscriber');
+    subscriber.on('message', (channel: string, message: string) => this.deliver(channel, message));
+    return this.subscriberConnection = subscriber;
+  }
 
   /**
    * Hands one message to every handler on its channel, each isolated from the others; all of them share the one decoded

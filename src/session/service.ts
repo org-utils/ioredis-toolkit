@@ -33,6 +33,8 @@ export class SessionService {
     validateMetadata(input.metadata, this.o.config.maxMetadataBytes);
     for (const { field, maxLength } of CLIENT_FIELDS) validateOptionalString(input[field], maxLength);
     if (this.o.config.securityVersionEnabled && input.securityVersion === undefined) throw new SessionInvalidError();
+    // Checked whether or not security versions are enabled: the version goes into the record, and the first one is stored for the user, never to be overwritten.
+    if (input.securityVersion !== undefined) validateSecurityVersion(input.securityVersion);
     const now = await this.now();
     const ttl = input.ttl ?? this.o.config.ttl;
     const absoluteDuration = input.absoluteTimeout ?? this.o.config.absoluteTimeout;
@@ -171,7 +173,7 @@ export class SessionService {
   /** Sets the user's security version used to invalidate older sessions. */
   async setSecurityVersion(userId: string, version: number): Promise<void> {
     validateUserId(userId);
-    if (!Number.isSafeInteger(version) || version < 0) throw new SessionInvalidError();
+    validateSecurityVersion(version);
     await this.o.repository.setSecurityVersion(userId, version);
   }
 
@@ -214,6 +216,7 @@ export class SessionService {
 }
 
 function validateUserId(value: string): void { if (typeof value !== 'string' || value.length < 1 || value.length > 256) throw new SessionInvalidError(); }
+function validateSecurityVersion(value: number): void { if (!Number.isSafeInteger(value) || value < 0) throw new SessionInvalidError(); }
 function validateOptionalString(value: string | undefined, max: number): void { if (value !== undefined && (typeof value !== 'string' || value.length > max)) throw new SessionInvalidError(); }
 function validateMetadata(value: SessionPatch['metadata'], maxBytes: number): void { if (value === undefined) return; try { const encoded = JSON.stringify(value); if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) throw new SessionInvalidError(); } catch (error) { if (error instanceof SessionInvalidError) throw error; throw new SessionInvalidError(); } }
 function errorForReason(reason: InvalidReason): Error {

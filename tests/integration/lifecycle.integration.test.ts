@@ -36,6 +36,31 @@ describeOnEachTopology('client lifecycle against real Redis', redis => {
     });
   });
 
+  it('opens no connection for a module first used after the client is closed', async () => {
+    const connectionName = `lifecycle-${randomUUID()}`;
+    await withClient({ ...redis.namedConnectionConfig(connectionName), pubsub: { enabled: true, namespace: redis.newNamespace() }, streams: { enabled: true, namespace: redis.newNamespace() } }, async client => {
+      await client.ping();
+      await client.close();
+
+      const { pubsub, streams } = client;
+      await expect(pubsub.subscribe('orders', () => undefined)).rejects.toThrow('Connection is closed');
+      // A publish runs on the shared connection, so it fails as ioredis fails any command once that is closed, which differs by topology.
+      await expect(pubsub.publish('orders', 1)).rejects.toThrow();
+      await expect(streams.read('events', { blockMs: 10 })).rejects.toThrow('Connection is closed');
+      await eventually(async () => expect(await redis.connectionsNamed(connectionName)).toEqual([]));
+    });
+  });
+
+  it('fails a blocking stream read on a Streams module from before the close with the same error', async () => {
+    await withClient({ ...redis.connectionConfig(), streams: { enabled: true, namespace: redis.newNamespace() } }, async client => {
+      const { streams } = client;
+      await streams.read('events', { blockMs: 10 });
+      await client.close();
+
+      await expect(streams.read('events', { blockMs: 10 })).rejects.toThrow('Connection is closed');
+    });
+  });
+
   it('lets commands already sent complete before the shared connection is quit', async () => {
     const namespace = redis.newNamespace();
     await withClient({ ...redis.connectionConfig(), cache: { enabled: true, namespace } }, async client => {

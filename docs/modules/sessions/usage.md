@@ -178,6 +178,8 @@ Use `revoke()` when you need an explicit invalidation state; use `destroy()` whe
 
 Sets a per-user security version when the feature is enabled. Sessions carrying an older version fail authentication.
 
+A security version is a whole number of at least 0. `setSecurityVersion()`, and `create()` when given a `securityVersion`, throw `SessionInvalidError` (`SESSION_INVALID`) for any other value, such as `-1`, `1.5` or `NaN`, and store nothing.
+
 ```ts
 await sessions.setSecurityVersion('user_123', 8);
 ```

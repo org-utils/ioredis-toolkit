@@ -22,7 +22,11 @@ export type RedisErrorSource = 'connection' | 'subscriber' | 'stream-reader' | '
 
 /** Where an error passed to {@link RedisClientDependencies.onError} came from. */
 export interface RedisErrorContext {
-  /** `connection` is the shared connection, `subscriber` the Pub/Sub subscriber connection. */
+  /**
+   * `connection` is the shared connection, `subscriber` the Pub/Sub subscriber connection and `stream-reader` a connection
+   * a blocking stream read runs on. `pubsub-handler` is a Pub/Sub handler that failed, or a message that was not JSON, and
+   * `lock-release` a release inside `lock.using()` that failed.
+   */
   source: RedisErrorSource;
   /** The logical channel, without the namespace, where the error concerns one. */
   channel?: string;

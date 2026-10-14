@@ -1,4 +1,4 @@
-import { RedisClientWrapper, containedReporter, reportConnectionErrors, type ErrorReporter, type RedisConnection } from '../redis/index.js';
+import { RedisClientWrapper, connectionClosedError, containedReporter, reportConnectionErrors, type ErrorReporter, type RedisConnection } from '../redis/index.js';
 
 /** A leased connection, and the command wrapper a read is given for it. */
 interface Reader { connection: RedisConnection; client: RedisClientWrapper }
@@ -20,7 +20,7 @@ export class StreamReaders {
    * back to the shared connection, which may still be serving every other command.
    */
   async using<T>(read: (client: RedisClientWrapper) => Promise<T>): Promise<T> {
-    if (this.closed) throw new Error('Stream readers are closed');
+    if (this.closed) throw connectionClosedError();
     const reader = this.idleReader() ?? this.lease();
     try { return await read(reader.client); }
     finally { this.giveBack(reader); }
