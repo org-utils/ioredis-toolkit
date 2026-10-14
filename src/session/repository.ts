@@ -137,8 +137,7 @@ export class SessionRepository {
       const consumed: SessionRecord = { ...stored, status: 'consumed', consumedAt: serverSeconds, successorId: successor.id, successorJti: successor.jti, version: stored.version + 1 };
       return { result: undefined, replacement: consumed, ttl: Math.max(1, tombstoneTtl) };
     });
-    try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id); }
-    catch (error) { throw new SessionStorageError('Session set cleanup failed', error); }
+    await this.leaveSessionSet(record.userId, record.id);
     await this.expireLocator(record.id, Math.max(1, tombstoneTtl));
   }
 
@@ -161,43 +160,95 @@ export class SessionRepository {
    * revocation off; every other change is conditional on the value it read, so none can undo one.
    *
    * A consumed session stays consumed: its revocation ends the session at the end of its rotation chain instead (ADR-0004).
-   * Rotation gives a successor the same expiry as its predecessor, so `tombstoneTtl` serves that session too.
+   * Rotation gives a successor the same expiry as its predecessor, so `tombstoneTtl` serves that session too. Rotation can
+   * consume the session at the end between the read and the write, so a write that turns out to have replaced anything but
+   * that active session walks on, and puts back what it replaced once the walk is over (ADR-0005): ending the successor comes
+   * first, so a revocation cut short leaves the logout done rather than the replay signal kept. Where a link leads to a
+   * successor not there yet, revoke writes a tombstone in its place, so that a rotation still creating it fails instead of
+   * leaving it active.
    */
   async revoke(record: SessionRecord, serverSeconds: number, tombstoneTtl: number): Promise<void> {
-    const end = await this.endOfChain(record);
-    if (!end) return;
-    const { id, key, stored } = end;
-    if (stored === 'unreadable') throw new SessionStorageError('Session revocation failed');
-    // Only the call that writes the tombstone cuts the locator; a later one would let it outlive the tombstone.
-    const revokesNow = stored !== 'missing' && stored.status !== 'revoked';
-    if (revokesNow) {
-      const revoked = this.o.serializer.serialize({ ...stored, status: 'revoked', version: stored.version + 1 });
-      try {
-        if (tombstoneTtl < 1) await this.o.redis.del(key);
-        else await this.o.redis.set(key, revoked, 'XX', 'EX', String(tombstoneTtl));
-      } catch (error) { throw new SessionStorageError('Session revocation failed', error); }
+    const replacedByMistake: { key: string; raw: string; pttl: number }[] = [];
+    try { await this.revokeAlongChain(record, serverSeconds, tombstoneTtl, replacedByMistake); }
+    finally { for (const { key, raw, pttl } of replacedByMistake) await this.putBack(key, raw, pttl); }
+  }
+
+  /** The walk `revoke` makes, noting each value its write replaced but must put back. */
+  private async revokeAlongChain(record: SessionRecord, serverSeconds: number, tombstoneTtl: number, replacedByMistake: { key: string; raw: string; pttl: number }[]): Promise<void> {
+    const passed = new Set<string>();
+    let id = record.id;
+    let predecessor: SessionRecord | null = null;
+    for (;;) {
+      const key = this.o.keys.session(record.userId, id);
+      let { stored } = await this.load(key);
+      if (isRecord(stored) && stored.status === 'active') {
+        const replaced = await this.writeRevoked(key, stored, tombstoneTtl);
+        if (replaced && isRecord(replaced.stored) && replaced.stored.status === 'active') {
+          // Only the call that replaced the active record cuts the locator; a later one would let it outlive the tombstone.
+          await this.leaveSessionSet(record.userId, id);
+          await this.expireLocator(id, tombstoneTtl);
+          return;
+        }
+        if (replaced) replacedByMistake.push({ key, raw: replaced.raw, pttl: replaced.pttl });
+        stored = replaced ? replaced.stored : 'missing';
+      }
+      if (stored === 'unreadable') throw new SessionStorageError('Session revocation failed');
+      if (stored === 'missing') {
+        if (predecessor === null) return this.leaveSessionSet(record.userId, id);
+        if (await this.takeSuccessorsPlace(key, predecessor, serverSeconds, tombstoneTtl)) return;
+        // The successor was created meanwhile: revoke it.
+        continue;
+      }
+      if (stored.status === 'revoked') return this.leaveSessionSet(record.userId, id);
+      // A consumed session without a link was consumed by a release that kept none: nothing is left to end.
+      if (stored.successorId === undefined) return;
+      passed.add(id);
+      if (passed.has(stored.successorId)) throw new SessionStorageError('Rotation chain links back on itself');
+      predecessor = stored;
+      id = stored.successorId;
     }
-    try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), id); }
-    catch (error) { throw new SessionStorageError('Session set cleanup failed', error); }
-    if (revokesNow) await this.expireLocator(id, tombstoneTtl);
+  }
+
+  /** Writes `record` revoked under `key` unconditionally, answering with the value it replaced, or null when there was none. */
+  private async writeRevoked(key: string, record: SessionRecord, ttl: number): Promise<{ raw: string; pttl: number; stored: Stored } | null> {
+    const revoked = this.o.serializer.serialize({ ...record, status: 'revoked', version: record.version + 1 });
+    const [written, raw, pttl] = await this.o.scripts.eval('revoke_session', [key], [revoked, String(ttl)]) as [number, string?, number?];
+    if (Number(written) !== 1) return null;
+    return { raw: raw!, pttl: Number(pttl), stored: this.decode(raw!) };
   }
 
   /**
-   * What is stored for the session at the end of a record's rotation chain: the record itself unless it is consumed, else
-   * wherever its forward links lead. Null when a link leads nowhere, to a successor that was never created or was written by
-   * a release that kept no link: nothing is left to end. A link back to a session already passed can only be corrupt data.
+   * Puts back a value that a revocation replaced although it was not the active session the revocation read: a consumed or
+   * revoked record, which revocation must leave as it is, for as long as it had left. Only a revocation's write over it is
+   * undone, and two revocations doing this at once agree on the oldest value, the one no revocation wrote.
    */
-  private async endOfChain(record: SessionRecord): Promise<{ id: string; key: string; stored: Stored } | null> {
-    const passed = new Set<string>();
-    for (let id = record.id; ; ) {
-      const key = this.o.keys.session(record.userId, id);
-      const { stored } = await this.load(key);
-      if (!isRecord(stored) || stored.status !== 'consumed') return { id, key, stored };
-      if (stored.successorId === undefined) return null;
-      passed.add(id);
-      if (passed.has(stored.successorId)) throw new SessionStorageError('Rotation chain links back on itself');
-      id = stored.successorId;
+  private async putBack(key: string, raw: string, pttl: number): Promise<void> {
+    const ttl = String(Math.max(1, Math.ceil(pttl / 1000)));
+    for (let attempt = 0; attempt < MAX_CHANGE_ATTEMPTS; attempt += 1) {
+      const current = await this.load(key);
+      if (current.raw === null || current.raw === raw || !isRecord(current.stored) || current.stored.status !== 'revoked') return;
+      if (await this.replace(key, current.raw, raw, ttl)) return;
     }
+    throw new SessionStorageError('Session is being changed by too many writers at once');
+  }
+
+  /**
+   * Writes a revoked tombstone where a consumed session's successor belongs, if nothing is there: a rotation still creating
+   * that successor then fails to, rather than leave it active. Answers whether the tombstone was written.
+   */
+  private async takeSuccessorsPlace(key: string, predecessor: SessionRecord, serverSeconds: number, ttl: number): Promise<boolean> {
+    const tombstone: SessionRecord = {
+      ...predecessor, id: predecessor.successorId!, jti: predecessor.successorJti ?? predecessor.jti, createdAt: serverSeconds,
+      lastAccessedAt: serverSeconds, status: 'revoked', version: 1, rotatedFrom: predecessor.jti
+    };
+    delete tombstone.consumedAt; delete tombstone.successorId; delete tombstone.successorJti;
+    try { return (await this.o.redis.set(key, this.o.serializer.serialize(tombstone), 'EX', String(ttl), 'NX')) === 'OK'; }
+    catch (error) { throw new SessionStorageError('Session revocation failed', error); }
+  }
+
+  private async leaveSessionSet(userId: string, id: string): Promise<void> {
+    try { await this.o.redis.zrem(this.o.keys.sessionSet(userId), id); }
+    catch (error) { throw new SessionStorageError('Session set cleanup failed', error); }
   }
 
   /** Removes the authoritative record and derived index entries. */
@@ -268,10 +319,15 @@ export class SessionRepository {
       const { raw, stored } = attempt === 0 && loaded ? loaded : await this.load(key);
       const change = decide(stored, attempt);
       if (raw === null || !('replacement' in change)) return change.result;
-      const result = await this.o.scripts.eval('replace_session', [key], [createHash('sha1').update(raw).digest('hex'), this.o.serializer.serialize(change.replacement), String(change.ttl)]);
-      if (Number((result as unknown[])[0]) === 1) return change.result;
+      if (await this.replace(key, raw, this.o.serializer.serialize(change.replacement), String(change.ttl))) return change.result;
     }
     throw new SessionStorageError('Session is being changed by too many writers at once');
+  }
+
+  /** Writes `replacement` under `key` for `ttl` seconds if what is stored is still `expected`, answering whether it was. */
+  private async replace(key: string, expected: string, replacement: string, ttl: string): Promise<boolean> {
+    const result = await this.o.scripts.eval('replace_session', [key], [createHash('sha1').update(expected).digest('hex'), replacement, ttl]);
+    return Number((result as unknown[])[0]) === 1;
   }
 
   /** Reads what is stored under a session key, along with the raw value it was decoded from. */
@@ -280,8 +336,13 @@ export class SessionRepository {
     try { raw = await this.o.redis.get(key); }
     catch (error) { throw new SessionStorageError('Session record unavailable', error); }
     if (raw === null) return { raw, stored: 'missing' };
-    try { return { raw, stored: this.o.serializer.deserialize(raw) }; }
-    catch { return { raw, stored: 'unreadable' }; }
+    return { raw, stored: this.decode(raw) };
+  }
+
+  /** Decodes a stored value as a record, or reports it unreadable. */
+  private decode(raw: string): Stored {
+    try { return this.o.serializer.deserialize(raw); }
+    catch { return 'unreadable'; }
   }
 
   /** The user tag a token hash's locator names, or null when there is none. */
