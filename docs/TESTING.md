@@ -14,6 +14,40 @@ The project separates deterministic unit/security tests from real Redis tests.
 8. Cluster integration tests with multiple primaries/replicas, MOVED/ASK handling, resharding, and node failure.
 9. Load/performance tests using bounded concurrency.
 
+## Real-Redis suites and topologies
+
+The integration suites (`tests/integration/`) and the concurrency suites (`tests/concurrency/`) run against real Redis, through the public surface, observed by the fixture in `tests/support/redis.ts`. Each one is declared with `describeOnEachTopology`, so it runs once per topology the environment names, and each run's suite title ends with the topology it ran against:
+
+| Topology | Variable | Example |
+| --- | --- | --- |
+| standalone | `REDIS_URL` | `redis://127.0.0.1:6379` |
+| cluster | `REDIS_CLUSTER_NODES` | `127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003` |
+
+A topology whose variable is unset is skipped, so with neither set these suites skip entirely. On Cluster the fixture lists keys, captures commands, counts subscribers and flushes the script cache on every node.
+
+### Starting both topologies locally
+
+```bash
+docker compose -p rsk-standalone -f docker/standalone.compose.yml up -d
+docker compose -p rsk-cluster -f docker/cluster.compose.yml up -d --wait
+
+export REDIS_URL=redis://127.0.0.1:6379
+export REDIS_CLUSTER_NODES=127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
+bun run test               # unit, security and concurrency suites
+bun run test:integration   # integration suites
+
+docker compose -p rsk-standalone -f docker/standalone.compose.yml down
+docker compose -p rsk-cluster -f docker/cluster.compose.yml down
+```
+
+The cluster is three masters, without replicas, in one container. Each node announces `127.0.0.1` and its own port, so the addresses Redis hands out in `CLUSTER SLOTS` and in `MOVED`/`ASK` redirects reach the published ports from the host. Ports 6379 and 7001-7003 must be free.
+
+CI (`.github/workflows/checks.yml`) runs lint, typecheck and both vitest configurations on every pull request and before every release, with standalone Redis as a service container and the cluster from the same compose file.
+
+### Known failures on Cluster
+
+A test that fails on Cluster because of a known, ticketed bug is declared with `redis.itFailsOnClusterUntil('#<ticket>', /what the failure says/, name, test)` instead of `it`. On standalone it is an ordinary test. On Cluster its title says which ticket it waits on, and it passes as long as the bug still shows: such bugs often show only when keys land on different masters or a race goes one way, so the body runs up to 32 times and the test passes at the first failure whose message, or a cause's, matches the pattern. Any other failure fails the test, so the mark hides only the bug it names. Once every attempt passes, the test fails and says to remove the mark, which is part of fixing the ticket.
+
 ## The exports map
 
 `tests/consumer/` holds one consumer per importable path: `root.ts` for the root, and a file named for each subpath. Each imports from that path alone, by the package's own name. `tests/unit/subpaths.test.ts` compiles them, so they resolve through the `exports` map in `package.json` to the source each target is built from. A subpath that stops resolving, or a name a consumer uses that its path stops exporting, fails that suite with the compiler's own message. The consumers compile against the source, not against the declarations a build emits. Adding a subpath means adding its consumer.
@@ -48,4 +82,4 @@ Production verification should include:
 - Redis memory pressure;
 - old backup restore scenarios.
 
-The current archive includes the standalone real-Redis integration harness. Sentinel and Cluster environments are supplied as disposable Docker definitions; their failover/resharding tests should be exercised in CI where Docker networking and Redis administration are available.
+The real-Redis suites run against standalone Redis and a 3-master Cluster. A Sentinel environment is supplied as a disposable Docker definition; Sentinel failover and Cluster failover/resharding tests are not yet written.
