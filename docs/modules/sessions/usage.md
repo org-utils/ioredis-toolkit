@@ -53,7 +53,7 @@ Sessions must be explicitly enabled. Creating the client does not require sessio
 | `touchInterval` | `number` | 60 | Minimum interval between rolling touch writes. |
 | `rolling` | `boolean` | `true` | Enables rolling idle expiration behavior. A touch extends only the idle expiry, never the hard `ttl`. |
 | `securityVersionEnabled` | `boolean` | `false` | Enables per-user security-version invalidation. The first `create()` for a user stores its version; see [`setSecurityVersion`](#setsecurityversionuserid-version). |
-| `maxSessionsPerUser` | `number` | 20 | Maximum indexed sessions per user. A `create()` over the limit evicts the oldest sessions, never the one it creates. `0` is unlimited. |
+| `maxSessionsPerUser` | `number` | 20 | Maximum sessions in a user's session set. A `create()` over the limit evicts the oldest sessions, never the one it creates. `0` is unlimited. |
 | `maxMetadataBytes` | `number` | 8192 | Maximum metadata JSON size. |
 | `maxBatchSize` | `number` | 200 | Maximum bounded administrative batch. |
 | `maxConcurrency` | `number` | 8 | Maximum bounded cross-slot/application fan-out. |
@@ -160,13 +160,13 @@ Marks a session unusable.
 await sessions.revoke(token);
 ```
 
-Revocation is idempotent from the application's perspective. `revoke()` (and rotation's internal predecessor `consume()`) remove the session from the user's index immediately rather than only relying on `list()`'s lazy self-heal, so a revoked/rotated session stops counting toward `maxSessionsPerUser` right away instead of only once its tombstone expires.
+Revocation is idempotent from the application's perspective. `revoke()` (and rotation's internal predecessor `consume()`) remove the session from the user's session set immediately rather than only relying on `list()`'s lazy self-heal, so a revoked/rotated session stops counting toward `maxSessionsPerUser` right away instead of only once its tombstone expires.
 
 A revoked or rotated session's record is kept as a tombstone for the rest of its lifetime, capped at 300 seconds. Its token locator, the key that maps the credential to its user, is cut to expire with the tombstone. While the tombstone lasts, a rotated credential presented again validates as `consumed` (and `rotate()` throws `SessionReplayError`), and a revoked one as `revoked`. Once the tombstone has expired, both validate as `not_found` and none of their keys remain, however often a session is rotated.
 
 ## `destroy(token)`
 
-Permanently removes the session record and derived indexes.
+Permanently removes the session record, its token locator and its member of the user's session set.
 
 ```ts
 await sessions.destroy(token);
@@ -192,7 +192,7 @@ The stored version expires with the user's sessions. It lives as long as the use
 
 ## `revokeAll(userId, limit?)`
 
-Revokes a bounded batch and returns `{ affected, remaining }` so large user indexes do not require loading every session into memory. The revoked sessions are deleted outright, so their credentials then validate as `not_found`. It works the same on standalone Redis and on Cluster.
+Revokes a bounded batch and returns `{ affected, remaining }` so a large session set does not require loading every session into memory. The revoked sessions are deleted outright, so their credentials then validate as `not_found`. It works the same on standalone Redis and on Cluster.
 
 ```ts
 let page = await sessions.revokeAll('user_123', 200);
@@ -252,7 +252,7 @@ Cookie authentication requires a CSRF strategy appropriate to the application. `
 
 ## Security and topology model
 
-Session records and per-user indexes use a user-derived Redis hash tag so operations concerning one user's sessions can be atomic within one Cluster slot. Operations spanning different users are not treated as cross-slot transactions.
+Session records and the user's session set use a user-derived Redis hash tag so operations concerning one user's sessions can be atomic within one Cluster slot. Operations spanning different users are not treated as cross-slot transactions.
 
 Never log raw session tokens. Do not put them into metrics labels, traces, exception messages, or persistent application logs.
 
@@ -269,7 +269,7 @@ All typed errors extend `SessionError`, which extends the package-wide `RedisToo
 | `SessionRotationError` | `SESSION_ROTATION` | `rotate()` when the predecessor was already consumed, cannot be rotated, or the successor could not be created after the predecessor was consumed |
 | `SessionConflictError` | `SESSION_CONFLICT` | `update()` on a stale `expectedVersion` |
 | `SessionLimitError` | `SESSION_LIMIT` | `list()` when `limit` exceeds `maxBatchSize` |
-| `SessionInvalidError` | `SESSION_INVALID` | malformed input, or a session that fails an index/security-version check |
+| `SessionInvalidError` | `SESSION_INVALID` | malformed input, or a session that fails a session set or security-version check |
 | `SessionStorageError` | `SESSION_STORAGE` | Redis-level read/write failures |
 | `SessionSerializationError` | `SESSION_SERIALIZATION` | a record cannot be serialized, or fails schema/decryption validation on read. `validate()` throws it too. The record is never deleted, so restoring the key manager or encryption setting makes the session usable again |
 | `SessionConfigurationError` | `SESSION_CONFIGURATION` | invalid session configuration, or constructing the manager while `enabled: false` |

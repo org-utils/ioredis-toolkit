@@ -23,7 +23,7 @@ export class SessionManager {
   revoke(token: string): Promise<void> { return this.service.revoke(token); }
   /** Sets the user's security version used by session validation when enabled. */
   setSecurityVersion(userId: string, version: number): Promise<void> { return this.service.setSecurityVersion(userId, version); }
-  /** Revokes a bounded number of sessions for a user and reports remaining indexed sessions. */
+  /** Revokes a bounded number of sessions for a user and reports how many remain in the user's session set. */
   revokeAll(userId: string, limit?: number): Promise<{ affected: number; remaining: number }> { return this.service.revokeAll(userId, limit); }
   /** Lists a bounded page of sessions for a user. */
   list(userId: string, offset?: number, limit?: number): Promise<SessionRecord[]> { return this.service.list(userId, offset, limit); }

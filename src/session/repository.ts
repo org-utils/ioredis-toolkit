@@ -18,7 +18,7 @@ type Stored = SessionRecord | 'missing' | 'unreadable';
  * it, the user's stored security version, and Redis server time, all at the same instant. `raw` is the value the record
  * was decoded from, so a write worked out from this read can be made conditional on the record being unchanged since.
  */
-export interface SessionRead { record: SessionRecord; raw: string; indexed: boolean; securityVersion: string | null; serverSeconds: number; }
+export interface SessionRead { record: SessionRecord; raw: string; inSessionSet: boolean; securityVersion: string | null; serverSeconds: number; }
 
 /** What is stored under a session key, along with the raw value it was decoded from. */
 type Loaded = { raw: string | null; stored: Stored };
@@ -42,7 +42,7 @@ export class SessionRepository {
     const ttl = Math.max(1, Math.ceil(record.expiresAt - record.createdAt));
     const result = await this.o.scripts.eval(
       'create_session',
-      [this.o.keys.session(record.userId, record.id), this.o.keys.userIndex(record.userId), this.o.keys.securityVersion(record.userId)],
+      [this.o.keys.session(record.userId, record.id), this.o.keys.sessionSet(record.userId), this.o.keys.securityVersion(record.userId)],
       [this.o.serializer.serialize(record), String(ttl), String(record.createdAt), record.id, String(this.o.config.maxSessionsPerUser),
         // The script deletes the record of each session it evicts, which shares the user's slot, by appending its token hash to this key.
         this.o.keys.sessionByTag(this.o.keys.userTag(record.userId), ''),
@@ -52,14 +52,14 @@ export class SessionRepository {
     const [code, ...evicted] = result as unknown[];
     if (Number(code) !== 1) throw new SessionStorageError('Session creation failed');
     // An evicted session is unusable once its record is gone; its locators live in other slots and are only cleanup.
-    if (evicted.length) await this.safeDel(...evicted.map(tokenHash => this.o.keys.tokenIndex(String(tokenHash))));
-    let indexed: string | null;
-    try { indexed = await this.o.redis.set(this.o.keys.tokenIndex(record.id), this.o.keys.userTag(record.userId), 'EX', String(ttl), 'NX'); }
-    catch (error) { throw new SessionStorageError('Session token index write failed', error); }
-    if (indexed !== 'OK') {
+    if (evicted.length) await this.safeDel(...evicted.map(tokenHash => this.o.keys.tokenLocator(String(tokenHash))));
+    let located: string | null;
+    try { located = await this.o.redis.set(this.o.keys.tokenLocator(record.id), this.o.keys.userTag(record.userId), 'EX', String(ttl), 'NX'); }
+    catch (error) { throw new SessionStorageError('Session token locator write failed', error); }
+    if (located !== 'OK') {
       await this.safeDel(this.o.keys.session(record.userId, record.id));
-      try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); } catch { /* best effort */ }
-      throw new SessionStorageError('Session token index already occupied');
+      try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id); } catch { /* best effort */ }
+      throw new SessionStorageError('Session token locator already occupied');
     }
   }
 
@@ -74,7 +74,7 @@ export class SessionRepository {
     let raw: string | null;
     try { raw = await this.o.redis.get(this.o.keys.sessionByTag(userTag, tokenHash)); }
     catch (error) { throw new SessionStorageError('Session record unavailable', error); }
-    if (!raw) { await this.safeDel(this.o.keys.tokenIndex(tokenHash)); return null; }
+    if (!raw) { await this.safeDel(this.o.keys.tokenLocator(tokenHash)); return null; }
     return this.o.serializer.deserialize(raw);
   }
 
@@ -90,21 +90,21 @@ export class SessionRepository {
     try {
       result = await this.o.scripts.eval(
         'read_session',
-        [this.o.keys.sessionByTag(userTag, tokenHash), this.o.keys.userIndexByTag(userTag), this.o.keys.securityVersionByTag(userTag)],
+        [this.o.keys.sessionByTag(userTag, tokenHash), this.o.keys.sessionSetByTag(userTag), this.o.keys.securityVersionByTag(userTag)],
         [tokenHash],
       );
     } catch (error) { throw new SessionStorageError('Session record unavailable', error); }
-    const [raw, indexed, securityVersion, serverSeconds] = result as [string | null, number, string | null, string];
-    if (!raw) { await this.safeDel(this.o.keys.tokenIndex(tokenHash)); return null; }
+    const [raw, inSessionSet, securityVersion, serverSeconds] = result as [string | null, number, string | null, string];
+    if (!raw) { await this.safeDel(this.o.keys.tokenLocator(tokenHash)); return null; }
     const record = this.o.serializer.deserialize(raw);
     // The set read is under the locator's tag and token hash, so it is this record's membership only if both are the record's own.
     const ownKeys = record.id === tokenHash && this.o.keys.userTag(record.userId) === userTag;
-    return { record, raw, indexed: indexed === 1 && ownKeys, securityVersion, serverSeconds: Number(serverSeconds) };
+    return { record, raw, inSessionSet: inSessionSet === 1 && ownKeys, securityVersion, serverSeconds: Number(serverSeconds) };
   }
 
   /** Persists the current security version for a user, for the longer of their longest-lived session and one session ttl. */
   async setSecurityVersion(userId: string, version: number): Promise<void> {
-    try { await this.o.scripts.eval('set_security_version', [this.o.keys.securityVersion(userId), this.o.keys.userIndex(userId)], [String(version), String(this.o.config.ttl * 1000)]); }
+    try { await this.o.scripts.eval('set_security_version', [this.o.keys.securityVersion(userId), this.o.keys.sessionSet(userId)], [String(version), String(this.o.config.ttl * 1000)]); }
     catch (error) { throw new SessionStorageError('Security version update failed', error); }
   }
 
@@ -133,8 +133,8 @@ export class SessionRepository {
       if (!isRecord(stored) || stored.status === 'revoked' || hasExpired(stored, serverSeconds)) throw new SessionRotationError('Session cannot be rotated');
       return { result: undefined, replacement: { ...stored, status: 'consumed', consumedAt: serverSeconds, version: stored.version + 1 }, ttl: Math.max(1, tombstoneTtl) };
     });
-    try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
-    catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
+    try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id); }
+    catch (error) { throw new SessionStorageError('Session set cleanup failed', error); }
     await this.expireLocator(record.id, Math.max(1, tombstoneTtl));
   }
 
@@ -169,8 +169,8 @@ export class SessionRepository {
         else await this.o.redis.set(key, revoked, 'XX', 'EX', String(tombstoneTtl));
       } catch (error) { throw new SessionStorageError('Session revocation failed', error); }
     }
-    try { await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id); }
-    catch (error) { throw new SessionStorageError('Session index cleanup failed', error); }
+    try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id); }
+    catch (error) { throw new SessionStorageError('Session set cleanup failed', error); }
     if (revokesNow) await this.expireLocator(record.id, tombstoneTtl);
   }
 
@@ -178,8 +178,8 @@ export class SessionRepository {
   async destroy(record: SessionRecord): Promise<void> {
     try {
       await this.o.redis.del(this.o.keys.session(record.userId, record.id));
-      await this.o.redis.zrem(this.o.keys.userIndex(record.userId), record.id);
-      await this.o.redis.del(this.o.keys.tokenIndex(record.id));
+      await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id);
+      await this.o.redis.del(this.o.keys.tokenLocator(record.id));
     } catch (error) { throw new SessionStorageError('Session deletion failed', error); }
   }
 
@@ -189,7 +189,7 @@ export class SessionRepository {
    * so a misconfigured key manager drops no session.
    */
   async list(userId: string, offset: number, limit: number, serverSeconds: number): Promise<SessionRecord[]> {
-    const members = await this.o.redis.zrange(this.o.keys.userIndex(userId), offset, offset + limit - 1);
+    const members = await this.o.redis.zrange(this.o.keys.sessionSet(userId), offset, offset + limit - 1);
     if (!members.length) return [];
     const keys = members.map(tokenHash => this.o.keys.sessionByTag(this.o.keys.userTag(userId), tokenHash));
     const raw = await this.o.redis.mgetClusterAware(keys, { concurrency: this.o.config.maxConcurrency });
@@ -201,22 +201,22 @@ export class SessionRepository {
       try { record = this.o.serializer.deserialize(value); } catch { return; /* reported by resolve(), never deleted */ }
       if (!hasExpired(record, serverSeconds)) records.push(record);
     });
-    if (stale.length) await this.o.redis.zrem(this.o.keys.userIndex(userId), ...stale);
+    if (stale.length) await this.o.redis.zrem(this.o.keys.sessionSet(userId), ...stale);
     return records;
   }
 
   /**
-   * Revokes a bounded batch and returns the number of indexed sessions remaining. The token locators live in other slots
+   * Revokes a bounded batch and returns the number of sessions left in the user's session set. The token locators live in other slots
    * and go first, through the cluster-aware delete; a credential without one already reads as not found. The records and
    * the user's session set share the user's slot, so they go after in one pipeline. A failure at either step throws, and
    * a retry finds the same batch still in the set.
    */
   async revokeAll(userId: string, limit: number): Promise<{ affected: number; remaining: number }> {
     const bounded = Math.min(Math.max(1, limit), this.o.config.maxBatchSize);
-    const setKey = this.o.keys.userIndex(userId);
+    const setKey = this.o.keys.sessionSet(userId);
     const members = await this.o.redis.zrange(setKey, 0, bounded - 1);
     if (!members.length) return { affected: 0, remaining: 0 };
-    try { await this.o.redis.del(...members.map(tokenHash => this.o.keys.tokenIndex(tokenHash))); }
+    try { await this.o.redis.del(...members.map(tokenHash => this.o.keys.tokenLocator(tokenHash))); }
     catch (error) { throw new SessionStorageError('One or more revokeAll operations failed', error); }
     const userTag = this.o.keys.userTag(userId);
     const pipeline = this.o.redis.pipeline();
@@ -260,8 +260,8 @@ export class SessionRepository {
 
   /** The user tag a token hash's locator names, or null when there is none. */
   private async locate(tokenHash: string): Promise<string | null> {
-    try { return await this.o.redis.get(this.o.keys.tokenIndex(tokenHash)); }
-    catch (error) { throw new SessionStorageError('Session token index unavailable', error); }
+    try { return await this.o.redis.get(this.o.keys.tokenLocator(tokenHash)); }
+    catch (error) { throw new SessionStorageError('Session token locator unavailable', error); }
   }
 
   /**
@@ -270,7 +270,7 @@ export class SessionRepository {
    * record, which reads as not found and is deleted then.
    */
   private async expireLocator(tokenHash: string, tombstoneTtl: number): Promise<void> {
-    const key = this.o.keys.tokenIndex(tokenHash);
+    const key = this.o.keys.tokenLocator(tokenHash);
     try {
       if (tombstoneTtl < 1) await this.o.redis.del(key);
       else await this.o.redis.expire(key, tombstoneTtl);

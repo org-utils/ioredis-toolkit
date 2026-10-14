@@ -22,7 +22,7 @@ DELETED (physical cleanup)
 - `destroy` is physical deletion and idempotent.
 - `revoke` is logical denial and idempotent.
 - `rotate` atomically consumes the predecessor before successor creation.
-- A stale user-index member cannot authenticate because validation requires active session state and current index membership.
+- A stale member of the user's session set cannot authenticate because validation requires active session state and current membership of the set.
 
 ## Operation semantics
 
@@ -32,8 +32,8 @@ DELETED (physical cleanup)
 | validate | active candidate | read-only decision | two round trips: the token locator, then one same-slot read-only Lua of the record, its membership in the user's session set, the user's security version and Redis `TIME`, all seen at one instant | safe read retry by application |
 | touch | active | active | same-key compare-and-set, worked out from the record and time validation read; leaves `version` unchanged | monotonic/idempotent effect |
 | update | active | active | same-key compare-and-set + version; a stale `expectedVersion` throws `SessionConflictError` | safe only with version semantics |
-| rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
-| revoke | active/revoked | revoked/deleted | an unconditional same-key write marks the record; a same-slot but separate `ZREM` then removes it from the user index (self-heals via `list()` if interrupted) | idempotent |
+| rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
+| revoke | active/revoked | revoked/deleted | an unconditional same-key write marks the record; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted) | idempotent |
 | destroy | any | deleted | individual writes | idempotent |
 | revokeAll | user's session set | bounded deletion | the batch's token locators, in other slots, are deleted first through the cluster-aware delete; then one same-slot pipeline deletes their records and removes them from the user's session set | idempotent per batch |
 

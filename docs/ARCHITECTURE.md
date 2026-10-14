@@ -8,11 +8,11 @@ Accepted for the initial implementation.
 
 The supplied specification described an existing Redis package, but this project started without one. Therefore the implementation owns the Redis connection factory, wrapper, cluster utilities, configuration validation, session domain, and public exports. No duplicate external authentication/core package is assumed.
 
-## Decision: opaque token + token-hash locator
+## Decision: opaque token + token locator
 
-A token-only `validate(token)` operation requires a locator. The package uses SHA-256(token) as the lookup key and stores only the derived hash plus a user hash-tag pointer. The actual session record remains authoritative.
+A token-only `validate(token)` operation requires a token locator. The package uses SHA-256(token) as the lookup key and stores only the derived hash plus a user hash-tag pointer. The actual session record remains authoritative.
 
-This is a deliberate secondary-index consistency boundary. A missing/stale index never authenticates anything.
+This is a deliberate consistency boundary: the token locator lives in a different slot from the record. A missing or stale token locator never authenticates anything.
 
 ## Decision: per-user Cluster hash tag
 
@@ -20,17 +20,17 @@ Session keys are shaped as:
 
 `<namespace>:session:{<sha256(userId)>}:<sha256(token)>`
 
-The user hash is deterministic and safe for Redis hash-tag syntax. It keeps one user's session records/index in one slot while distributing different users across slots.
+The user hash is deterministic and safe for Redis hash-tag syntax. It keeps one user's session records and session set in one slot while distributing different users across slots.
 
 ## Decision: no global JTI index
 
 JTI is an internal session identifier and is not needed to validate the opaque token. A global JTI index would add another cross-slot consistency boundary without improving the core validation path.
 
-## Decision: session index as a negative authorization guard
+## Decision: the user's session set as a negative authorization guard
 
-The user sorted-set index is checked during validation. The index can deny access but cannot grant access: the session record must independently pass all checks. The record and its membership are read in one script in the user's slot, so validation never sees a session as it stood before a concurrent rotation or revocation alongside its membership as it stood after.
+The user's session set is checked during validation. It can deny access but cannot grant access: the session record must independently pass all checks. The record and its membership are read in one script in the user's slot, so validation never sees a session as it stood before a concurrent rotation or revocation alongside its membership as it stood after.
 
-Max-session enforcement (`create_session`) and revocation (`revoke()`, and rotation's `consume()`) all remove their affected member from the index eagerly. `create_session` additionally deletes the evicted session's record, which shares the user's slot, and returns the evicted token hashes. The repository then deletes their token locators, which live in other slots, through the kernel's cluster-aware delete as best-effort cleanup. An evicted session is unusable even if that cleanup fails, because its record is gone; a leftover locator resolves to a missing record, reads as not found, and is deleted then. The script never evicts the session it has just added, even when `createdAt` scores tie.
+Max-session enforcement (`create_session`) and revocation (`revoke()`, and rotation's `consume()`) all remove their affected member from the user's session set eagerly. `create_session` additionally deletes the evicted session's record, which shares the user's slot, and returns the evicted token hashes. The repository then deletes their token locators, which live in other slots, through the kernel's cluster-aware delete as best-effort cleanup. An evicted session is unusable even if that cleanup fails, because its record is gone; a leftover locator resolves to a missing record, reads as not found, and is deleted then. The script never evicts the session it has just added, even when `createdAt` scores tie.
 
 The user's session set lives as long as its longest-lived session: `create_session` extends its TTL to at least the new session's, comparing in Lua rather than with `EXPIRE GT` so Redis 6 keeps working. A set written by an earlier version without a TTL is given one that outlives every record it holds. Stale members are still pruned lazily by `list()` and by eviction.
 

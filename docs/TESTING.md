@@ -77,8 +77,8 @@ Production verification should include:
 - command-level pipeline errors;
 - malformed session payloads;
 - malformed cache/Pub-Sub payloads (non-JSON values written or published by a non-conforming client);
-- stale token indexes;
-- stale user-index members;
+- stale token locators;
+- stale members of the user's session set;
 - Redis memory pressure;
 - old backup restore scenarios.
 
