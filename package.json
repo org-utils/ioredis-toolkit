@@ -43,7 +43,7 @@
     "dist",
     "docs",
     "!docs/agents",
-    "!docs/ACCEPTANCE-REPORT.md",
+    "!docs/adr",
     "LICENSE",
     "README.md",
     "CHANGELOG.md"

@@ -15,7 +15,7 @@ const publishing = manifest.files.filter(entry => !entry.startsWith('!'));
  * What the repository keeps under a published directory for its own maintainers, which a consumer has no use for.
  * Listed here rather than read from the manifest's `!` entries, so dropping an exclusion from the manifest fails the suite.
  */
-const maintainerOnly = ['docs/agents', 'docs/ACCEPTANCE-REPORT.md'];
+const maintainerOnly = ['docs/agents', 'docs/adr'];
 
 /** Every file the manifest sends a consumer's import to: `main`, `types`, and each target in the exports map. */
 const pointedAt = [...new Set([manifest.main, manifest.types, ...Object.values(manifest.exports).flatMap(target => typeof target === 'string' ? [target] : Object.values(target))])];
