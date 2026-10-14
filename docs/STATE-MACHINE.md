@@ -34,7 +34,7 @@ DELETED (physical cleanup)
 | touch | active | active | same-key compare-and-set, worked out from the record and time validation read; leaves `version` unchanged | monotonic/idempotent effect |
 | update | active | active | same-key compare-and-set + version; a stale `expectedVersion` throws `SessionConflictError` | safe only with version semantics |
 | rotate | active | predecessor consumed + new active session | predecessor consume is an atomic same-key compare-and-set; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted); successor cross-slot write separate | not inherently idempotent |
-| revoke | active/revoked, or consumed (acts on the end of its rotation chain) | revoked/deleted | reads follow a consumed record's forward links to the end of its rotation chain, then an unconditional write marks the record there; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted) | idempotent |
+| revoke | active/revoked, or consumed (acts on the end of its rotation chain) | revoked | reads follow a consumed record's forward links to the end of its rotation chain, then a script marks the record there unconditionally and returns what it replaced, which is put back if it was not active (see below); a link to a missing successor is filled with a revoked tombstone, only if absent; a same-slot but separate `ZREM` then removes it from the user's session set (self-heals via `list()` if interrupted) | idempotent |
 | destroy | any | deleted | individual writes | idempotent |
 | revokeAll | user's session set | bounded deletion | the batch's token locators, in other slots, are deleted first through the cluster-aware delete; then one same-slot pipeline deletes their records and removes them from the user's session set | idempotent per batch |
 
@@ -45,3 +45,7 @@ DELETED (physical cleanup)
 A write that finds the stored value changed works its answer out again from the new value. An operation that loses 32 times in a row fails with `SessionStorageError` and leaves the record as it found it.
 
 `revoke` is the exception: it writes the revoked record unconditionally, so concurrent writers cannot hold a revocation off. It needs no condition because it is a one-way transition, and because every other change is conditional on the value it read, none of them can turn a revoked record back into an active one.
+
+The one thing an unconditional write could get wrong is the record it overwrites. `rotate` can consume the session between `revoke`'s read and its write, and a consumed record must stay consumed (ADR-0004). So the write is a script that also returns the value it replaced. If that value was not active, `revoke` follows a consumed record's link on to the successor, and once that walk is over puts back what it replaced, conditional on a revocation's write still being there (ADR-0005).
+
+`rotate` creates the successor after consuming its predecessor. `revoke` can therefore follow a link to a successor that does not exist yet. In that case it writes a revoked tombstone at the successor's key, only if nothing is there. The rotation's creation of the successor, which is also only-if-absent, then fails with `SessionRotationError`, instead of leaving the successor active after the logout.

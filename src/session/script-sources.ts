@@ -89,5 +89,17 @@ if not raw then return {0} end
 if redis.sha1hex(raw) ~= ARGV[1] then return {-1} end
 redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
 return {1}
+`,
+  'revoke_session': `-- KEYS[1] session key
+-- ARGV[1] revoked record
+-- ARGV[2] ttl seconds
+-- Writes the revoked record unconditionally and returns {1, the value it replaced, that value's remaining ttl in ms},
+-- or {0} when the key is absent. Redis cannot decode the record, so whether the value replaced was the active one is
+-- left to the caller, which puts it back when it was not.
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {0} end
+local pttl = redis.call('PTTL', KEYS[1])
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+return {1, raw, pttl}
 `
 } as const;
