@@ -208,6 +208,8 @@ npm install ioredis-toolkit
 
 `ioredis` and `zod` are dependencies of the package and are installed with it. The package is ESM-only and requires Node.js 22 or newer.
 
+Node.js is the only supported runtime: the package is tested on Node.js only. Under Bun, use 1.4 or newer: before 1.4, a Sentinel client reconnecting after a failover, or a standalone client connecting for the first time, can wait forever for a server that accepts the connection and then drops it, as a TCP proxy with no backend does ([#101](https://github.com/org-utils/ioredis-toolkit/issues/101)). `health()` reports such a client as `unhealthy`.
+
 ## Development
 
 This repo uses [Bun](https://bun.sh) for dependency installation and scripts; the committed `bun.lock` is the source of truth, and CI installs from it with `bun install --frozen-lockfile`. The `pnpm-lock.yaml` also committed is not used by CI.
