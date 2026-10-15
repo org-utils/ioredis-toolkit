@@ -1,5 +1,18 @@
+# Standalone Redis on 6379.
+# RedisInsight (`--profile insight`, http://localhost:5542) and redis-cli (`run --rm redis-cli`) share the server's
+# network namespace, so 127.0.0.1:6379 reaches it from inside them as it does from the host.
+# REDIS_URL=redis://127.0.0.1:6379
 services:
   redis:
     image: redis:8-alpine
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
-    ports: ["6379:6379"]
+    ports: ["6379:6379", "5542:5540"]
+  redisinsight:
+    profiles: [insight]
+    image: redis/redisinsight:3.8.0
+    network_mode: service:redis
+  redis-cli:
+    profiles: [cli]
+    image: redis:8-alpine
+    network_mode: service:redis
+    entrypoint: ["redis-cli", "-p", "6379"]
