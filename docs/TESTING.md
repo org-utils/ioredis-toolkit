@@ -41,9 +41,28 @@ docker compose -p rsk-standalone -f docker/standalone.compose.yml down
 docker compose -p rsk-cluster -f docker/cluster.compose.yml down
 ```
 
-The cluster is three masters, without replicas, in one container. Each node announces `127.0.0.1` and its own port, so the addresses Redis hands out in `CLUSTER SLOTS` and in `MOVED`/`ASK` redirects reach the published ports from the host. Ports 6379 and 7001-7003 must be free.
+The cluster is three masters, without replicas, in one container. Each node announces `127.0.0.1` and its own port, so the addresses Redis hands out in `CLUSTER SLOTS` and in `MOVED`/`ASK` redirects reach the published ports from the host. Ports 6379, 7001-7003, 5540 and 5542 must be free.
 
 CI (`.github/workflows/checks.yml`) runs lint, typecheck and both vitest configurations on every pull request and before every release, with standalone Redis as a service container and the cluster from the same compose file.
+
+### Starting Sentinel locally
+
+```bash
+docker compose -p rsk-sentinel -f docker/sentinel.compose.yml up -d --wait
+```
+
+One master (`127.0.0.1:6380`), one replica (`127.0.0.1:6381`) and three sentinels (`127.0.0.1:26379`, `26380` and `26381`, quorum 2) monitoring the master `mymaster`. Every process shares one network namespace and announces `127.0.0.1` and the port it publishes, so the master address Sentinel hands out reaches the published ports from the host, before and after a failover. The master is its own service, so `docker compose -p rsk-sentinel -f docker/sentinel.compose.yml kill redis-master` forces a failover to `127.0.0.1:6381`. No suite runs against Sentinel yet. Ports 6380, 6381, 26379-26381 and 5541 must be free.
+
+### Inspecting with redis-cli and RedisInsight
+
+Each compose file also defines `redis-cli` and RedisInsight, which share the Redis network namespace, so they reach the servers at the same `127.0.0.1` addresses the host uses. Neither starts unless asked for:
+
+```bash
+docker compose -p rsk-cluster -f docker/cluster.compose.yml run --rm redis-cli cluster info
+docker compose -p rsk-cluster -f docker/cluster.compose.yml --profile insight up -d
+```
+
+`redis-cli` connects to 6379 on standalone, to 7001 in cluster mode (`-c`) on the cluster, and to the sentinel on 26379 on Sentinel; a later `-p` picks another port. RedisInsight serves its UI on http://localhost:5542 for standalone, 5540 for the cluster and 5541 for Sentinel. Add the database from inside the UI: `127.0.0.1:6379`, `127.0.0.1:7001`, or `127.0.0.1:26379` with master `mymaster`. RedisInsight recognises the cluster and the sentinel by itself. A plain `down` leaves RedisInsight running, so take it down with `--profile insight down`.
 
 ### Known failures on Cluster
 

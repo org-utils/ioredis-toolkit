@@ -1,10 +1,12 @@
 # A 3-master Redis Cluster in one container. Every node announces 127.0.0.1 and its own port,
 # so the addresses in CLUSTER SLOTS and in MOVED/ASK redirects reach the published ports from the host.
+# RedisInsight (`--profile insight`, http://localhost:5540) and redis-cli (`run --rm redis-cli`) share the cluster's
+# network namespace, so those addresses reach the nodes from inside them too.
 # REDIS_CLUSTER_NODES=127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
 services:
   redis-cluster:
     image: redis:8-alpine
-    ports: ["7001:7001", "7002:7002", "7003:7003"]
+    ports: ["7001:7001", "7002:7002", "7003:7003", "5540:5540"]
     entrypoint: ["sh", "-c"]
     command:
       - |
@@ -23,3 +25,12 @@ services:
       interval: 1s
       timeout: 3s
       retries: 30
+  redisinsight:
+    profiles: [insight]
+    image: redis/redisinsight:3.8.0
+    network_mode: service:redis-cluster
+  redis-cli:
+    profiles: [cli]
+    image: redis:8-alpine
+    network_mode: service:redis-cluster
+    entrypoint: ["redis-cli", "-c", "-p", "7001"]
