@@ -3,14 +3,20 @@ import type { Cluster, ClusterNode, ClusterOptions, Redis, RedisOptions } from '
 /** Supported Redis deployment topologies. */
 export type RedisMode = 'standalone' | 'sentinel' | 'cluster';
 
+/**
+ * ioredis options without `replyMapping`: the package reads replies in ioredis's default (`legacy`) shape, which
+ * `replyMapping: 'resp3'` would change.
+ */
+type LegacyReplyRedisOptions = Omit<RedisOptions, 'replyMapping'>;
+
 /** Connection options for a single Redis server. */
-export interface StandaloneRedisConfig extends RedisOptions {
+export interface StandaloneRedisConfig extends LegacyReplyRedisOptions {
   /** Selects standalone Redis. Optional for backwards-compatible single-node configuration. */
   mode?: 'standalone';
 }
 
 /** Connection options for Redis Sentinel. */
-export interface SentinelRedisConfig extends RedisOptions {
+export interface SentinelRedisConfig extends LegacyReplyRedisOptions {
   /** Selects Sentinel mode. */
   mode: 'sentinel';
   /** Sentinel endpoints used to discover the current master. */
@@ -20,9 +26,11 @@ export interface SentinelRedisConfig extends RedisOptions {
 }
 
 /** Connection options for Redis Cluster. */
-export interface ClusterRedisConfig extends ClusterOptions {
+export interface ClusterRedisConfig extends Omit<ClusterOptions, 'redisOptions'> {
   /** Selects Cluster mode. */
   mode: 'cluster';
+  /** Options for every node connection, as ioredis takes them, without `replyMapping`. */
+  redisOptions?: Omit<NonNullable<ClusterOptions['redisOptions']>, 'replyMapping'> | undefined;
   /** Initial cluster startup nodes. */
   nodes: ClusterNode[];
 }

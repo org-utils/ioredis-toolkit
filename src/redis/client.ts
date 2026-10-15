@@ -3,9 +3,10 @@ import type { RedisConfig, RedisConnection } from './types.js';
 
 function buildConnection(config: RedisConfig): RedisConnection {
   if (config.mode === "cluster") {
-    const { mode: _mode, nodes, ...options } = config;
+    const { mode: _mode, nodes, redisOptions, ...options } = config;
     void _mode;
-    return new Cluster(nodes, options);
+    // ioredis takes `redisOptions` left out but not set to undefined.
+    return new Cluster(nodes, redisOptions === undefined ? options : { ...options, redisOptions });
   }
   if (config.mode === "sentinel") {
     const { mode: _mode, sentinels, name, ...options } = config;

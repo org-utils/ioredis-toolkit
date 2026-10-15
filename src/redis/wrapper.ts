@@ -131,7 +131,8 @@ export class RedisClientWrapper implements RedisCommandClient {
    */
   duplicateConnection(): RedisConnection {
     if (this.closed) throw connectionClosedError();
-    return this.client.duplicate() as RedisConnection;
+    // Each topology's duplicate() is generic, so a call on the union type does not type-check.
+    return isCluster(this.client) ? this.client.duplicate() : this.client.duplicate();
   }
   /** Closes the wrapped connection: quit if it is up, disconnected otherwise. Idempotent. */
   async close(): Promise<void> { this.closed = true; await closeConnection(this.client); }
