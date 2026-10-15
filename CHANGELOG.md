@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.0
+
+### Major Changes
+
+- 5ea0f0f: The package now depends on ioredis 6 (`^6.0.0`), and the ioredis types in its public surface are ioredis 6's. ioredis 6's new `replyMapping` option is not supported: the package reads replies in ioredis's default shape, which `replyMapping: 'resp3'` would change. The connection configurations (`StandaloneRedisConfig`, `SentinelRedisConfig`, `ClusterRedisConfig` and a Cluster's `redisOptions`) leave it out, and `createRedisClient`, `createRedisConnection` and `createSessionManagerFromRedis` throw `RedisConfigurationError` for a configuration that sets it.
+
+### Patch Changes
+
+- 077877a: `close()` on a Sentinel client now closes the failover detector's connections to the sentinels, so a process that only waits for its work to finish exits again (#125). Since 1.2.0 turned the detector on, ioredis's `quit()` left those connections open on the shared connection and the Pub/Sub subscriber.
+
 ## 1.2.0
 
 ### Minor Changes
