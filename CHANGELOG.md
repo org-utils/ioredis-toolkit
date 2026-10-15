@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+### Patch Changes
+
+- f9f1ff4: The minimum versions of the package's dependencies rise to ioredis 5.11.1 and zod 4.6.7.
+
 ## 1.1.1
 
 ### Patch Changes
