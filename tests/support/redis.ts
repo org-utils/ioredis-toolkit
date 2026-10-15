@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { Cluster, Redis } from 'ioredis';
-import { afterAll, beforeAll, describe, it } from 'vitest';
+import { afterAll, beforeAll, describe, inject, it } from 'vitest';
 import { createRedisClient, createSessionManagerFromRedis } from '../../src/index.js';
 import type { RedisClient, RedisClientConfig, RedisClientDependencies, RedisConfig, SessionConfig, SessionManager } from '../../src/index.js';
+
+declare module 'vitest' {
+  interface ProvidedContext {
+    /** Whether the running suite may call `flushScriptCache()`. Unprovided means it may not. */
+    scriptCacheMayBeFlushed: boolean;
+  }
+}
 
 /** A Redis deployment shape every real-server suite runs against. */
 export type Topology = 'standalone' | 'cluster';
@@ -210,8 +217,9 @@ export interface RedisFixture {
   commandsFromClientsOf(namespace: string, work: () => Promise<unknown>): Promise<string[][]>;
   /**
    * Empties the script cache of every server, as a restart or failover would: the one server-wide effect a suite may have.
-   * No stored data is touched, and a client that runs Lua by SHA sends the source again when the server asks for it,
-   * so the only trace on a shared server is that one extra EVAL per script per client.
+   * No stored data is touched, and a client that runs Lua by SHA sends the source again when the server asks for it.
+   * That extra EVAL breaks other suites' command counts, so it throws unless the suite is in `SCRIPT_CACHE_FLUSHING_SUITES`
+   * in `vitest.integration.config.ts`.
    */
   flushScriptCache(): Promise<void>;
 }
@@ -271,7 +279,10 @@ function redisFixture(topology: Topology, config: RedisConfig): RedisFixture {
     },
     storedUnder: namespace => storedUnder(observer, namespace),
     commandsFromClientsOf: (namespace, work) => commandsFromClientsOf(observer, namespace, work),
-    flushScriptCache: async () => { await Promise.all(nodesOf(observer).map(node => node.script('FLUSH'))); },
+    flushScriptCache: async () => {
+      if (!inject('scriptCacheMayBeFlushed')) throw new Error('Only a suite in SCRIPT_CACHE_FLUSHING_SUITES (vitest.integration.config.ts) may flush the script cache.');
+      await Promise.all(nodesOf(observer).map(node => node.script('FLUSH')));
+    },
   };
 }
 
