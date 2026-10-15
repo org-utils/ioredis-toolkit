@@ -54,6 +54,7 @@ const rootOnly: Surface = {
     'RedisClientConfig', 'RedisClientDependencies', 'RedisErrorContext', 'RedisErrorSource', 'ModuleConfigMode',
     'RedisConfig', 'RedisMode', 'StandaloneRedisConfig', 'SentinelRedisConfig', 'ClusterRedisConfig',
     'RedisConnection', 'RedisCommandClient', 'RedisPipeline', 'ClusterFanoutOptions', 'ModuleConfigBase',
+    'RedisHealth', 'RedisHealthOptions', 'RedisHealthStatus', 'RedisNodeHealth',
   ],
 };
 

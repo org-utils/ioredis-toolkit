@@ -27,6 +27,8 @@ describe('error codes', () => {
   it.each([
     { code: 'REDIS_CONFIGURATION', type: RedisConfigurationError, condition: 'an invalid connection configuration', operation: () => parseRedisConnectionConfig({ port: 0 }) },
     { code: 'REDIS_CONFIGURATION', type: RedisConfigurationError, condition: 'a module used while disabled', operation: () => offlineClient().cache },
+    { code: 'REDIS_CONFIGURATION', type: RedisConfigurationError, condition: 'a health-check timeout that is not a positive number', operation: () => offlineClient().health({ timeoutMs: 0 }) },
+    { code: 'REDIS_CONFIGURATION', type: RedisConfigurationError, condition: 'a health-check degraded threshold that is negative', operation: () => offlineClient().health({ degradedMs: -1 }) },
 
     { code: 'SESSION_CONFIGURATION', type: SessionConfigurationError, condition: 'an invalid session configuration', operation: () => parseSessionConfig({ ttl: 0 }) },
     { code: 'SESSION_CONFIGURATION', type: SessionConfigurationError, condition: 'sessions used while disabled', operation: () => offlineClient().sessions },

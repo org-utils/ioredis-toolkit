@@ -10,6 +10,7 @@ export { createRedisConnection, parseRedisConnectionConfig, RedisToolkitError, R
 export type {
   RedisConfig, RedisMode, StandaloneRedisConfig, SentinelRedisConfig, ClusterRedisConfig,
   RedisConnection, RedisCommandClient, RedisPipeline, ClusterFanoutOptions, ModuleConfigBase,
+  RedisHealth, RedisHealthOptions, RedisHealthStatus, RedisNodeHealth,
 } from './redis/index.js';
 
 export {

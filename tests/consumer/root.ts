@@ -1,7 +1,7 @@
 import { RedisToolkitError, createRedisClient, parseCacheConfig, parseRedisConnectionConfig, parseSessionConfig, serializeCookie } from 'ioredis-toolkit';
 import type {
   CacheConfig, ClusterFanoutOptions, ClusterRedisConfig, CookieOptions, InvalidReason, KeyManager, LockConfig, ModuleConfigBase, ModuleConfigMode,
-  PubSubConfig, RateLimitConfig, RedisCache, RedisClient, RedisClientConfig, RedisClientDependencies, RedisConfig, RedisErrorContext, RedisErrorSource, RedisLock, RedisPipeline,
+  PubSubConfig, RateLimitConfig, RedisCache, RedisClient, RedisClientConfig, RedisClientDependencies, RedisConfig, RedisErrorContext, RedisErrorSource, RedisHealth, RedisHealthOptions, RedisHealthStatus, RedisLock, RedisNodeHealth, RedisPipeline,
   RedisPubSub, RedisRateLimiter, RedisStreams, SentinelRedisConfig, SessionConfig, SessionManager, SessionMetrics, StandaloneRedisConfig, StreamsConfig,
 } from 'ioredis-toolkit';
 
@@ -46,6 +46,15 @@ export function alertOn(error: unknown, context: RedisErrorContext): string {
 export function connect(encryptionKeyManager: KeyManager, metrics: SessionMetrics): RedisClient {
   const dependencies: RedisClientDependencies = { encryptionKeyManager, metrics, onError: (error, context) => { alertOn(error, context); } };
   return createRedisClient(config, dependencies);
+}
+
+/** What a health check takes and hands back is nameable, so a readiness probe can be written against it. */
+export async function ready(client: RedisClient): Promise<boolean> {
+  const options: RedisHealthOptions = { timeoutMs: 500, degradedMs: 50 };
+  const health: RedisHealth = await client.health(options);
+  const masters: RedisNodeHealth[] = health.nodes ?? [];
+  const failing: RedisHealthStatus = 'unhealthy';
+  return health.status !== failing && masters.every(node => node.status !== failing);
 }
 
 export async function shutdown(client: RedisClient): Promise<void> {

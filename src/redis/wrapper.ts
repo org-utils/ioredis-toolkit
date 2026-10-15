@@ -1,6 +1,7 @@
 import type { Cluster, Redis } from 'ioredis';
 import { isCluster, redisHashSlot } from './cluster.js';
 import { closeConnection } from './lifecycle.js';
+import { checkHealth, type RedisHealth, type RedisHealthOptions } from './health.js';
 import type { ClusterFanoutOptions, RedisCommandClient, RedisConnection, RedisPipeline } from './types.js';
 export type { ClusterFanoutOptions } from './types.js';
 
@@ -92,6 +93,8 @@ export class RedisClientWrapper implements RedisCommandClient {
   }
   /** Pings Redis. */
   ping(): Promise<string> { return this.client.ping(); }
+  /** Checks that Redis answers, within a timeout of its own. A Redis failure resolves as `unhealthy` rather than rejecting. */
+  health(options: RedisHealthOptions = {}): Promise<RedisHealth> { return checkHealth(this.client, options); }
   /** Scans one Redis node or the standalone server. */
   scan(cursor: string, ...args: string[]): Promise<[string, string[]]> {
     return (this.client.scan as unknown as (...a: string[]) => Promise<[string, string[]]>)(cursor, ...args);
