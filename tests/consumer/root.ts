@@ -21,6 +21,16 @@ export const topologies: [StandaloneRedisConfig, SentinelRedisConfig, ClusterRed
   { mode: 'cluster', nodes: [{ host: '127.0.0.1', port: 7000 }] },
 ];
 
+/** The package reads replies in ioredis's default shape, so no topology takes the `replyMapping` that would change it. */
+export const replyMappings: [StandaloneRedisConfig, SentinelRedisConfig, ClusterRedisConfig] = [
+  // @ts-expect-error replyMapping is not a connection option
+  { host: '127.0.0.1', port: 6379, replyMapping: 'resp3' },
+  // @ts-expect-error replyMapping is not a connection option
+  { mode: 'sentinel', name: 'primary', sentinels: [{ host: '127.0.0.1', port: 26379 }], replyMapping: 'resp3' },
+  // @ts-expect-error replyMapping is not a node connection option either
+  { mode: 'cluster', nodes: [{ host: '127.0.0.1', port: 7000 }], redisOptions: { replyMapping: 'resp3' } },
+];
+
 /** What every module's configuration shares is nameable, so one function can take any of them. */
 export function keyspace(module: ModuleConfigBase): string | undefined {
   return module.enabled ? `${module.namespace}:*` : undefined;
