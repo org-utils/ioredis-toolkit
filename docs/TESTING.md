@@ -88,7 +88,7 @@ Besides the Redis fixture, `tests/support/` holds small helpers the suites share
 
 Tests must use a unique namespace per run. Never use `FLUSHALL` or `FLUSHDB` against a shared Redis deployment.
 
-`SCRIPT FLUSH` is the one server-wide command the suites send: it is the only way to make a real server answer `NOSCRIPT`, which the cached-SHA tests need. It removes no stored data, and any client that runs Lua by SHA recovers by sending the source again. Two runs sharing one server can still disturb each other's cached-SHA assertions, so give each concurrent run its own Redis.
+`SCRIPT FLUSH` is the one server-wide command the suites send: it is the only way to make a real server answer `NOSCRIPT`, which the cached-SHA tests need. It removes no stored data, and any client that runs Lua by SHA recovers by sending the source again. That extra `EVAL` still breaks any assertion counting the commands a client sent, so a flush must never overlap another suite. `vitest.integration.config.ts` lists the suites that flush in `SCRIPT_CACHE_FLUSHING_SUITES` and runs them in a group of their own, after every other integration file has finished. `flushScriptCache()` throws in any suite not listed there. Two runs sharing one server can still disturb each other's cached-SHA assertions, so give each concurrent run its own Redis.
 
 ## Failure injection
 
