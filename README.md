@@ -212,7 +212,7 @@ Node.js is the only supported runtime: the package is tested on Node.js only. Un
 
 ## Development
 
-This repo uses [Bun](https://bun.sh) for dependency installation and scripts; the committed `bun.lock` is the source of truth, and CI installs from it with `bun install --frozen-lockfile`. The `pnpm-lock.yaml` also committed is not used by CI.
+This repo uses [Bun](https://bun.sh) for dependency installation and scripts; the committed `bun.lock` is the source of truth, and CI installs from it with `bun install --frozen-lockfile`.
 
 ```bash
 bun install
