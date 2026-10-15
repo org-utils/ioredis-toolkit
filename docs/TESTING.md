@@ -43,7 +43,7 @@ docker compose -p rsk-cluster -f docker/cluster.compose.yml down
 
 The cluster is three masters, without replicas, in one container. Each node announces `127.0.0.1` and its own port, so the addresses Redis hands out in `CLUSTER SLOTS` and in `MOVED`/`ASK` redirects reach the published ports from the host. `--wait` returns once standalone Redis answers `PING` and every cluster node reports `cluster_state:ok`. Ports 6379, 7001-7003, 5540 and 5542 must be free.
 
-CI (`.github/workflows/checks.yml`) runs lint, typecheck and both vitest configurations on every pull request and before every release, with standalone Redis as a service container and the cluster from the same compose file.
+CI (`.github/workflows/checks.yml`) runs lint, typecheck and both vitest configurations on every pull request and before every release, with standalone Redis as a service container, and the cluster and the Sentinel stack from the same compose files.
 
 ### Starting Sentinel locally
 

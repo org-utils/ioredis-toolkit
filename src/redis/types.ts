@@ -9,7 +9,10 @@ export interface StandaloneRedisConfig extends RedisOptions {
   mode?: 'standalone';
 }
 
-/** Connection options for Redis Sentinel. */
+/**
+ * Connection options for Redis Sentinel. Unlike ioredis, `failoverDetector` defaults to `true`, so the connection moves
+ * to the new master once Sentinel announces a failover; set it to `false` to keep ioredis's behaviour.
+ */
 export interface SentinelRedisConfig extends RedisOptions {
   /** Selects Sentinel mode. */
   mode: 'sentinel';

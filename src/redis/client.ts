@@ -10,7 +10,10 @@ function buildConnection(config: RedisConfig): RedisConnection {
   if (config.mode === "sentinel") {
     const { mode: _mode, sentinels, name, ...options } = config;
     void _mode;
-    return new Redis.Redis({ ...options, sentinels, name });
+    // Without the failover detector, ioredis stays on the old master until Sentinel demotes it, about 10 s after a
+    // failover, and every write the old master acknowledges meanwhile is lost (#121). With it, the connection moves
+    // once Sentinel announces +switch-master. Duplicates (the Pub/Sub subscriber, stream readers) inherit it.
+    return new Redis.Redis({ failoverDetector: true, ...options, sentinels, name });
   }
   const { mode: _mode, ...options } = config;
   void _mode;

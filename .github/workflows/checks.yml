@@ -22,9 +22,11 @@ jobs:
           --health-retries 30
 
     # The real-Redis suites run once per topology named here, and skip a topology that is not.
+    # The Sentinel failover suite runs when REDIS_SENTINELS names the sentinels.
     env:
       REDIS_URL: redis://127.0.0.1:6379
       REDIS_CLUSTER_NODES: 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
+      REDIS_SENTINELS: 127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381
 
     steps:
       - name: Checkout
@@ -34,6 +36,10 @@ jobs:
       # comes from the same compose file contributors run locally.
       - name: Start Redis Cluster
         run: docker compose -f docker/cluster.compose.yml up -d --wait
+
+      # A project of its own: in the cluster's, the two files' redisinsight and redis-cli services would be one.
+      - name: Start Redis Sentinel
+        run: docker compose -p rsk-sentinel -f docker/sentinel.compose.yml up -d --wait
 
       - name: Setup Node
         uses: actions/setup-node@v4
