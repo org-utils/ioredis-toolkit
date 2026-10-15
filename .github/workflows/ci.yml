@@ -39,11 +39,16 @@ jobs:
       - name: Build
         run: bun run build
 
+      # v2, not v1: v1 finds what was published by parsing "New tag:" lines, which @changesets/cli 3 no longer
+      # prints, so it pushed no tags and created no GitHub releases. v2 reads the CLI's CHANGESETS_OUTPUT events.
+      # It no longer writes an .npmrc from NPM_TOKEN; the repo's .npmrc reads the variable instead. push-with-git-cli
+      # keeps v1's git pushes, so the version commit `changeset version` makes (commit: true) is pushed as it is.
       - name: Create Release PR or Publish
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
-          version: bun run version
-          publish: bun run ci:publish
+          version-script: bun run version
+          publish-script: bun run ci:publish
+          push-with-git-cli: true
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
