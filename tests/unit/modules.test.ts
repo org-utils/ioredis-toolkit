@@ -1,7 +1,7 @@
 import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { RedisConfigurationError, SessionConfigurationError, createRedisClient, createSessionManagerFromRedis } from '../../src/index.js';
+import { RedisConfigurationError, SessionConfigurationError, createRedisClient, createRedisConnection, createSessionManagerFromRedis } from '../../src/index.js';
 import type { RedisClientConfig, RedisConfig } from '../../src/index.js';
 import { closedPort } from '../support/closed-port.js';
 import { expectPackageError } from '../support/errors.js';
@@ -57,6 +57,18 @@ describe('client configuration validation', () => {
   it('accepts Cluster startup nodes in every form ioredis takes', async () => {
     const port = await closedPort();
     expect(() => createRedisClient({ mode: 'cluster', nodes: [`127.0.0.1:${port}`, port, { port }], lazyConnect: true })).not.toThrow();
+  });
+
+  // The package reads replies in ioredis's default shape, which `replyMapping: 'resp3'` would change.
+  it.each([
+    ['standalone', (port: number) => ({ mode: 'standalone', host: '127.0.0.1', port, replyMapping: 'resp3' })],
+    ['sentinel', (port: number) => ({ mode: 'sentinel', name: 'primary', sentinels: [{ host: '127.0.0.1', port }], replyMapping: 'resp3' })],
+    ['cluster', (port: number) => ({ mode: 'cluster', nodes: [{ host: '127.0.0.1', port }], redisOptions: { replyMapping: 'resp3' } })],
+  ])('rejects replyMapping on %s at every entry point', async (_topology, connection) => {
+    const config = { ...connection(await closedPort()), lazyConnect: true } as unknown as RedisConfig;
+    await expectPackageError(() => createRedisClient(config), RedisConfigurationError, 'REDIS_CONFIGURATION');
+    await expectPackageError(() => createRedisConnection(config), RedisConfigurationError, 'REDIS_CONFIGURATION');
+    await expectPackageError(() => createSessionManagerFromRedis(config, { enabled: true }), RedisConfigurationError, 'REDIS_CONFIGURATION');
   });
 
   describe('namespaces', () => {

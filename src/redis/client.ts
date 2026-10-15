@@ -1,7 +1,20 @@
 import Redis, { Cluster } from 'ioredis';
+import { RedisConfigurationError } from './errors.js';
 import type { RedisConfig, RedisConnection } from './types.js';
 
+/**
+ * Refuses ioredis's `replyMapping`, at the top level or in a Cluster's `redisOptions`. The package reads replies in
+ * ioredis's default shape, which `replyMapping: 'resp3'` would change. The types leave it out, but a caller without them can still pass it.
+ */
+function refuseReplyMapping(config: RedisConfig): void {
+  const replyMappingOf = (options: object | undefined): unknown => (options as { replyMapping?: unknown } | undefined)?.replyMapping;
+  const refused = (path: string) => new RedisConfigurationError(`${path}: not supported, the package reads replies in ioredis's default shape`);
+  if (replyMappingOf(config) !== undefined) throw refused('replyMapping');
+  if (config.mode === 'cluster' && replyMappingOf(config.redisOptions) !== undefined) throw refused('redisOptions.replyMapping');
+}
+
 function buildConnection(config: RedisConfig): RedisConnection {
+  refuseReplyMapping(config);
   if (config.mode === "cluster") {
     const { mode: _mode, nodes, redisOptions, ...options } = config;
     void _mode;
