@@ -29,6 +29,11 @@ services:
     profiles: [insight]
     image: redis/redisinsight:3.8.0
     network_mode: service:redis-cluster
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5540/api/health"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
   redis-cli:
     profiles: [cli]
     image: redis:8-alpine

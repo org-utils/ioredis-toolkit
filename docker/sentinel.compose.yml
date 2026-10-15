@@ -30,14 +30,20 @@ services:
         done
         wait
     healthcheck:
-      test: ["CMD-SHELL", "for port in 26379 26380 26381; do redis-cli -p $$port sentinel ckquorum mymaster | grep -q '^OK 3' || exit 1; done"]
+      # Healthy once every sentinel reaches quorum and sees the master's replica up and in sync, so a failover can succeed.
+      test: ["CMD-SHELL", "for port in 26379 26380 26381; do redis-cli -p $$port sentinel ckquorum mymaster | grep -q '^OK 3' || exit 1; replica=$$(redis-cli -p $$port sentinel replicas mymaster); echo \"$$replica\" | grep -A1 -x flags | grep -qx slave || exit 1; echo \"$$replica\" | grep -A1 -x master-link-status | grep -qx ok || exit 1; done"]
       interval: 1s
       timeout: 3s
-      retries: 30
+      retries: 60
   redisinsight:
     profiles: [insight]
     image: redis/redisinsight:3.8.0
     network_mode: service:net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5540/api/health"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
   redis-cli:
     profiles: [cli]
     image: redis:8-alpine
