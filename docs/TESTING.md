@@ -13,7 +13,7 @@ The project separates deterministic unit/security tests from real Redis tests.
 
 `bun run test` runs layers 3-5 and `bun run test:integration` runs layer 6. `bun run test:watch` reruns the first set on change, and `bun run test:coverage` runs it with V8 coverage (text and HTML reports).
 
-Not yet written: Sentinel failover tests (a Sentinel environment is supplied as a disposable Docker definition, `docker/sentinel.compose.yml`), Cluster tests with replicas, MOVED/ASK handling, resharding or node failure, load/performance tests, and concurrent `maxSessionsPerUser` tests.
+Not yet written: Sentinel failover tests (`docker/sentinel.compose.yml` supplies a Sentinel environment that can fail over, see [Starting Sentinel locally](#starting-sentinel-locally)), Cluster tests with replicas, MOVED/ASK handling, resharding or node failure, load/performance tests, and concurrent `maxSessionsPerUser` tests.
 
 ## Real-Redis suites and topologies
 

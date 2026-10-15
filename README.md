@@ -208,7 +208,7 @@ bun run test:integration
 bun run build
 ```
 
-The real-Redis suites run against standalone Redis (`REDIS_URL`) and Redis Cluster (`REDIS_CLUSTER_NODES`), skipping a topology that is not configured. [docs/TESTING.md](./docs/TESTING.md#starting-both-topologies-locally) explains how to start both with the Docker definitions under `docker/`.
+The real-Redis suites run against standalone Redis (`REDIS_URL`) and Redis Cluster (`REDIS_CLUSTER_NODES`), skipping a topology that is not configured. [docs/TESTING.md](./docs/TESTING.md#starting-both-topologies-locally) explains how to start both with the Docker definitions under `docker/`, along with a [Sentinel stack](./docs/TESTING.md#starting-sentinel-locally) (master, replica and three sentinels) and [`redis-cli` and RedisInsight](./docs/TESTING.md#inspecting-with-redis-cli-and-redisinsight) for each topology.
 
 ## Design principle
 
