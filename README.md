@@ -86,6 +86,19 @@ process.on('SIGTERM', async () => {
 
 Every connection the client opens always has an `'error'` listener of its own, so without a hook those errors are dropped rather than crashing the process. A hook that throws, or returns a promise that rejects, is contained.
 
+## Health checks
+
+`health()` asks whether Redis is answering, for a readiness or liveness probe. It sends a `PING` with a timeout of its own, so it answers within `timeoutMs` (default 1000) even while Redis is down. A plain `ping()` stays queued through ioredis's reconnect retries, about ten seconds by default. A Redis failure never rejects: a timeout, a refused connection or a closed client resolves as `unhealthy`, with the reason in `error`. A round trip slower than `degradedMs` (default 100) is `degraded`.
+
+```ts
+app.get('/ready', async (_req, res) => {
+  const health = await redis.health({ timeoutMs: 500 });
+  res.status(health.status === 'unhealthy' ? 503 : 200).json(health);
+});
+```
+
+On standalone and Sentinel the `PING` goes over the shared connection, which on Sentinel is the current master. On Cluster every master is pinged at once, and each appears in `nodes` with its `address`, `status` and `latencyMs`. The cluster is `unhealthy` when any master is, since that master's slots cannot be served. `latencyMs` is the slowest round trip measured. The check opens no connection of its own and does not look at the Pub/Sub subscriber or stream-reader connections.
+
 ## Fluent module overrides
 
 Each module can inherit the global configuration and override selected values:
@@ -172,7 +185,7 @@ Both configurations are validated before anything connects, so a mistyped `mode`
 
 Only these paths and `ioredis-toolkit/package.json` are importable; a file inside `dist/` is not.
 
-What these paths export is the whole public surface: the client facade and the connection types, the module classes, their configuration, input and result types, the cookie helpers, the error hierarchy and its code unions, the factory functions and the `parse*Config` functions. `RedisClient` extends the package's Redis command wrapper, so every method of `RedisCommandClient` is public on the client: raw commands such as `get`, `set`, `del`, `eval` and `pipeline`, `duplicateConnection()`, and the cluster-aware `mgetClusterAware()`, `scanCluster()` and `deletePatternClusterAware()`. They run on the shared connection as given, outside every module's namespace and validation. Everything else is internal and may change in any release: the classes the client facade constructs on your behalf (the session repository, service, serializer, key strategy, token manager and script registry), the wrapper class itself, which is not exported by name, the validation schema objects, and the cluster hash-slot helpers. A module is obtained from `createRedisClient` or a session factory function, never constructed directly.
+What these paths export is the whole public surface: the client facade, the connection types and the health-check types, the module classes, their configuration, input and result types, the cookie helpers, the error hierarchy and its code unions, the factory functions and the `parse*Config` functions. `RedisClient` extends the package's Redis command wrapper, so every method of `RedisCommandClient` is public on the client: raw commands such as `get`, `set`, `del`, `eval` and `pipeline`, `duplicateConnection()`, and the cluster-aware `mgetClusterAware()`, `scanCluster()` and `deletePatternClusterAware()`. They run on the shared connection as given, outside every module's namespace and validation. Everything else is internal and may change in any release: the classes the client facade constructs on your behalf (the session repository, service, serializer, key strategy, token manager and script registry), the wrapper class itself, which is not exported by name, the validation schema objects, and the cluster hash-slot helpers. A module is obtained from `createRedisClient` or a session factory function, never constructed directly.
 
 ## Documentation
 

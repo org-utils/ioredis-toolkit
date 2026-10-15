@@ -107,18 +107,6 @@ export interface RotationResult {
   previousJti: string;
 }
 
-/** Lightweight result from the Redis-backed session health probe. */
-export interface SessionHealth {
-  /** Aggregate health classification. */
-  status: 'healthy' | 'degraded' | 'unhealthy';
-  /** Round-trip latency measured by the probe. */
-  latencyMs: number;
-  /** Error-rate signal supplied by the health implementation. */
-  errorRate: number;
-  /** Redis client status string. */
-  redisStatus: string;
-}
-
 /** Minimal metrics sink accepted by the session subsystem. */
 export interface SessionMetrics {
   /** Increments a counter metric. */
