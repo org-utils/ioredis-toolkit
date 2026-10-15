@@ -1,0 +1,22 @@
+# Throwaway: 3 masters + 3 replicas in one container, every node announcing 127.0.0.1 and its published port.
+# PID 1 is the shell, so killing one redis-server leaves the container (and its published port) up.
+services:
+  cluster:
+    image: redis:8-alpine
+    ports: ["7101-7106:7101-7106"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        for port in 7101 7102 7103 7104 7105 7106; do
+          mkdir -p /data/$$port
+          redis-server --port $$port --dir /data/$$port --protected-mode no --cluster-enabled yes --cluster-config-file nodes.conf \
+            --cluster-node-timeout 2000 --cluster-announce-ip 127.0.0.1 --appendonly no --save "" &
+        done
+        for port in 7101 7102 7103 7104 7105 7106; do until redis-cli -p $$port ping >/dev/null 2>&1; do sleep 0.1; done; done
+        redis-cli --cluster create 127.0.0.1:7101 127.0.0.1:7102 127.0.0.1:7103 127.0.0.1:7104 127.0.0.1:7105 127.0.0.1:7106 --cluster-replicas 1 --cluster-yes >/dev/null
+        wait
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7101 cluster info | grep -q cluster_state:ok && for p in 7104 7105 7106; do redis-cli -p $$p info replication | grep -q master_link_status:up || exit 1; done"]
+      interval: 1s
+      timeout: 3s
+      retries: 60

@@ -1,0 +1,12 @@
+# Throwaway: a standalone Redis that restarts 3 s after it is shut down, inside a container that stays up, so its
+# published port is still bound (and accepted by Docker Desktop's proxy) while nothing listens behind it.
+services:
+  redis:
+    image: redis:8-alpine
+    ports: ["6390:6390"]
+    entrypoint: ["sh", "-c"]
+    command: ["while :; do redis-server --port 6390 --save '' --appendonly no; sleep 3; done"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6390", "ping"]
+      interval: 1s
+      retries: 30
