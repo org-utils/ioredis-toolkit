@@ -36,6 +36,10 @@ _Avoid_: private, experimental
 The one file through which a module is imported: `src/<module>/index.ts`, exporting the module's class together with its public types. Every subpath in the exports map resolves to one; the kernel's serves the package only and has no subpath.
 _Avoid_: barrel (there is one barrel, the root), main file, index
 
+**Supported runtime**:
+A JavaScript runtime the package is tested on and whose failures are fixed as bugs; today only Node.js. A runtime the package is merely known to work on is not supported.
+_Avoid_: platform, environment
+
 ### Keys and time
 
 **Namespace**:
