@@ -1,0 +1,51 @@
+# One master, one replica and three sentinels (quorum 2), sharing one network namespace owned by `net`.
+# Every process listens on and announces 127.0.0.1 and the port it publishes, so the master and sentinel addresses
+# Sentinel hands out reach the published ports from the host, before and after a failover. The master and replica are
+# separate services, so a failover can be forced by stopping, killing or pausing `redis-master` alone.
+# RedisInsight (`--profile insight`, http://localhost:5541) and redis-cli (`run --rm redis-cli`) join the same namespace.
+# Sentinels: 127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381, master name mymaster.
+services:
+  net:
+    image: redis:8-alpine
+    command: ["sleep", "infinity"]
+    ports: ["6380:6380", "6381:6381", "26379:26379", "26380:26380", "26381:26381", "5541:5540"]
+  redis-master:
+    image: redis:8-alpine
+    network_mode: service:net
+    command: ["redis-server", "--port", "6380", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+  redis-replica:
+    image: redis:8-alpine
+    network_mode: service:net
+    command: ["redis-server", "--port", "6381", "--replicaof", "127.0.0.1", "6380", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+  sentinel:
+    image: redis:8-alpine
+    network_mode: service:net
+    depends_on: [redis-master, redis-replica]
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        for port in 26379 26380 26381; do
+          printf "port $$port\nsentinel monitor mymaster 127.0.0.1 6380 2\nsentinel down-after-milliseconds mymaster 1000\nsentinel failover-timeout mymaster 5000\nsentinel parallel-syncs mymaster 1\n" > /tmp/sentinel-$$port.conf
+          redis-sentinel /tmp/sentinel-$$port.conf &
+        done
+        wait
+    healthcheck:
+      # Healthy once every sentinel reaches quorum and sees the master's replica up and in sync, so a failover can succeed.
+      test: ["CMD-SHELL", "for port in 26379 26380 26381; do redis-cli -p $$port sentinel ckquorum mymaster | grep -q '^OK 3' || exit 1; replica=$$(redis-cli -p $$port sentinel replicas mymaster); echo \"$$replica\" | grep -A1 -x flags | grep -qx slave || exit 1; echo \"$$replica\" | grep -A1 -x master-link-status | grep -qx ok || exit 1; done"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+  redisinsight:
+    profiles: [insight]
+    image: redis/redisinsight:3.8.0
+    network_mode: service:net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5540/api/health"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+  redis-cli:
+    profiles: [cli]
+    image: redis:8-alpine
+    network_mode: service:net
+    entrypoint: ["redis-cli", "-p", "26379"]
