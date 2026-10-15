@@ -67,6 +67,8 @@ const cluster = createRedisClient({
 });
 ```
 
+On Sentinel, ioredis's `failoverDetector` is on by default, unlike in ioredis itself: every connection the client opens moves to the new master as soon as Sentinel announces a failover, instead of staying on the old master until Sentinel demotes it about 10 s later. A failover still loses the writes the old master acknowledges in the second or so before Sentinel announces it, and no call fails for them. [Sentinel failover](./docs/DEPLOYMENT.md#sentinel-failover) explains that window, what the detector costs in connections, and how to turn it off.
+
 ## Shutdown and error visibility
 
 `close()` closes every connection the client opened: the shared connection, the Pub/Sub subscriber connection if Pub/Sub was used, and the connections blocking stream reads run on. A connection that is up is quit, so commands already sent complete; one that is not is disconnected. A stream reader is always disconnected, so a read still blocked ends at once. It is idempotent and safe to call whichever modules were used, so it can sit in a generic shutdown hook. Once it has been called the client opens no further connection. A Pub/Sub subscribe or a blocking stream read afterwards, whenever the module was first used, rejects with the `Connection is closed.` error ioredis gives a command on a closed connection; any other command fails as ioredis fails it.
@@ -223,7 +225,7 @@ bun run test:integration
 bun run build
 ```
 
-The real-Redis suites run against standalone Redis (`REDIS_URL`) and Redis Cluster (`REDIS_CLUSTER_NODES`), skipping a topology that is not configured. [docs/TESTING.md](./docs/TESTING.md#starting-both-topologies-locally) explains how to start both with the Docker definitions under `docker/`, along with a [Sentinel stack](./docs/TESTING.md#starting-sentinel-locally) (master, replica and three sentinels) and [`redis-cli` and RedisInsight](./docs/TESTING.md#inspecting-with-redis-cli-and-redisinsight) for each topology.
+The real-Redis suites run against standalone Redis (`REDIS_URL`) and Redis Cluster (`REDIS_CLUSTER_NODES`), skipping a topology that is not configured, and a failover suite runs against Sentinel (`REDIS_SENTINELS`). [docs/TESTING.md](./docs/TESTING.md#starting-both-topologies-locally) explains how to start both with the Docker definitions under `docker/`, along with a [Sentinel stack](./docs/TESTING.md#starting-sentinel-locally) (master, replica and three sentinels) and [`redis-cli` and RedisInsight](./docs/TESTING.md#inspecting-with-redis-cli-and-redisinsight) for each topology.
 
 ## Design principle
 
