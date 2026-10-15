@@ -9,11 +9,11 @@ The project separates deterministic unit/security tests from real Redis tests.
 3. Unit tests (`tests/unit/`), with no Redis: configuration parsing and validation (`config`), cookie serialization (`cookie`), the error class and code of each failure decided before a command is sent (`errors`), client close and the `onError` hook (`lifecycle`), module configuration, enablement gating and namespace collisions (`modules`), a Pub/Sub subscribe on a lost connection failing without an unhandled error (`pubsub`), and the exports map, public surface and packed tarball described below.
 4. One security suite (`tests/security/malformed-credential.test.ts`): a malformed credential validates as `invalid`, and `get()` of one throws `SessionInvalidError`. That the raw credential is never stored is checked against real Redis in `tests/integration/session.integration.test.ts`.
 5. Concurrency tests (`tests/concurrency/`) against real Redis, in plain and encrypted storage: simultaneous updates at one version, touches, revoke under concurrent touches, and simultaneous rotation, including revoke of a consumed credential while its chain's end rotates.
-6. Integration tests (`tests/integration/`) against standalone Redis and a 3-master Cluster: sessions (including `maxSessionsPerUser`), Pub/Sub (malformed-message dropping, one delivery per handler, concurrent subscribes), Streams, rate limiting, the convenience wrappers, Lua by cached SHA, authoritative time and client lifecycle.
+6. Integration tests (`tests/integration/`) against standalone Redis and a 3-master Cluster: sessions (including `maxSessionsPerUser`), Pub/Sub (malformed-message dropping, one delivery per handler, concurrent subscribes), Streams, rate limiting, the convenience wrappers, Lua by cached SHA, authoritative time and client lifecycle. One more, `tests/integration/sentinel-failover.integration.test.ts`, runs against Sentinel alone: a write workload across a graceful `SENTINEL FAILOVER`, checking that no write acknowledged after Sentinel announces the new master is lost.
 
 `bun run test` runs layers 3-5 and `bun run test:integration` runs layer 6. `bun run test:watch` reruns the first set on change, and `bun run test:coverage` runs it with V8 coverage (text and HTML reports).
 
-Not yet written: Sentinel failover tests (`docker/sentinel.compose.yml` supplies a Sentinel environment that can fail over, see [Starting Sentinel locally](#starting-sentinel-locally)), Cluster tests with replicas, MOVED/ASK handling, resharding or node failure, load/performance tests, and concurrent `maxSessionsPerUser` tests.
+Not yet written: Sentinel tests beyond a graceful failover (a crashed or paused master, the other modules across a failover), Cluster tests with replicas, MOVED/ASK handling, resharding or node failure, load/performance tests, and concurrent `maxSessionsPerUser` tests.
 
 ## Real-Redis suites and topologies
 
@@ -49,9 +49,14 @@ CI (`.github/workflows/checks.yml`) runs lint, typecheck and both vitest configu
 
 ```bash
 docker compose -p rsk-sentinel -f docker/sentinel.compose.yml up -d --wait
+
+export REDIS_SENTINELS=127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381
+bun run test:integration   # the Sentinel failover suite, with any topology named above
+
+docker compose -p rsk-sentinel -f docker/sentinel.compose.yml down
 ```
 
-One master (`127.0.0.1:6380`), one replica (`127.0.0.1:6381`) and three sentinels (`127.0.0.1:26379`, `26380` and `26381`, quorum 2) monitoring the master `mymaster`. Every process shares one network namespace and announces `127.0.0.1` and the port it publishes, so the master address Sentinel hands out reaches the published ports from the host, before and after a failover. The master is its own service, so `docker compose -p rsk-sentinel -f docker/sentinel.compose.yml kill redis-master` forces a failover to `127.0.0.1:6381`. `--wait` returns only once every sentinel has quorum and sees the replica up and in sync with the master, so a failover forced straight after it succeeds. No suite runs against Sentinel yet. Ports 6380, 6381, 26379-26381 and 5541 must be free.
+One master (`127.0.0.1:6380`), one replica (`127.0.0.1:6381`) and three sentinels (`127.0.0.1:26379`, `26380` and `26381`, quorum 2) monitoring the master `mymaster`. Every process shares one network namespace and announces `127.0.0.1` and the port it publishes, so the master address Sentinel hands out reaches the published ports from the host, before and after a failover. The master is its own service, so `docker compose -p rsk-sentinel -f docker/sentinel.compose.yml kill redis-master` forces a failover to `127.0.0.1:6381`. `--wait` returns only once every sentinel has quorum and sees the replica up and in sync with the master, so a failover forced straight after it succeeds. The failover suite runs when `REDIS_SENTINELS` names the sentinels (`REDIS_SENTINEL_NAME` names the master, `mymaster` when unset). It fails the master over, so point it only at a deployment it may do that to, and expect each run to take about 30 s: before failing over, it waits for the replica to resync after the previous failover. Ports 6380, 6381, 26379-26381 and 5541 must be free.
 
 ### Inspecting with redis-cli and RedisInsight
 
