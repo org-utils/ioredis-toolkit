@@ -37,6 +37,8 @@ const closing = new WeakMap<RedisConnection, Promise<void>>();
 /**
  * Closes a connection once, however often it is asked. A ready connection is quit, so commands already sent
  * complete; any other is disconnected, since a quit would wait for a connection that may never come up.
+ * A quit standalone or Sentinel connection is disconnected as well: on Sentinel, only a disconnect closes the
+ * failover detector's connections to the sentinels, and a quit leaves them open, so the process cannot exit (#125).
  */
 export function closeConnection(connection: RedisConnection): Promise<void> {
   let closed = closing.get(connection);
@@ -50,5 +52,7 @@ export function closeConnection(connection: RedisConnection): Promise<void> {
 async function quitOrDisconnect(connection: RedisConnection): Promise<void> {
   if (connection.status === 'end') return;
   if (connection.status !== 'ready') { connection.disconnect(); return; }
-  try { await connection.quit(); } catch { connection.disconnect(); }
+  try { await connection.quit(); } catch { connection.disconnect(); return; }
+  // Not on Cluster: it has no sentinels, and a disconnect after a quit moves it from 'end' back to 'disconnecting'.
+  if (!isCluster(connection)) connection.disconnect();
 }

@@ -130,6 +130,26 @@ async function writeAcrossGracefulFailover(config: SentinelRedisConfig): Promise
   }
 }
 
+/**
+ * How many connections to each sentinel are subscribed to a channel. Each client connection with the failover detector
+ * holds one, subscribed to +switch-master, on up to `sentinelMaxConnections` sentinels. A sentinel has no PUBSUB command,
+ * so its CLIENT LIST is read.
+ */
+async function subscribedOn(sentinels: Redis[]): Promise<number[]> {
+  return Promise.all(sentinels.map(async sentinel => (await sentinel.call('CLIENT', 'LIST') as string).split('\n').filter(line => / sub=[1-9]/.test(line)).length));
+}
+
+/** Resolves once every sentinel's subscribed count passes `test`, or throws with the last counts after 5 s. */
+async function untilSubscribed(sentinels: Redis[], test: (count: number, index: number) => boolean, failure: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const counts = await subscribedOn(sentinels);
+    if (counts.every(test)) return;
+    if (Date.now() > deadline) throw new Error(`${failure} within 5 s: subscribed connections per sentinel are ${JSON.stringify(counts)}`);
+    await delay(100);
+  }
+}
+
 /** A run as one line: how many writes were acknowledged and lost, and when the lost ones were acknowledged. */
 function describeRun({ acknowledged, failed, announced, lost }: FailoverRun): string {
   const switched = announced.find(({ channel }) => channel === '+switch-master')?.at;
@@ -146,6 +166,24 @@ function describeRun({ acknowledged, failed, announced, lost }: FailoverRun): st
 const ANNOUNCEMENT_SKEW_MS = 100;
 
 describe.skipIf(!sentinelConfig)('Sentinel failover against real Redis', () => {
+  // ioredis's quit() leaves the failover detector's sentinel connections open, so a process waiting on them never exits (#125).
+  it('leaves no connection to a sentinel open once closed, from the shared connection or a Pub/Sub subscriber', async () => {
+    const config = sentinelConfig!;
+    const sentinels = config.sentinels.map(({ host, port }) => new Redis({ host, port }));
+    const client = createRedisClient({ ...config, pubsub: { enabled: true, namespace: `test-${randomUUID()}` } });
+    try {
+      const before = await subscribedOn(sentinels);
+      await client.ping();
+      await client.pubsub.subscribe('channel', () => undefined);
+      await untilSubscribed(sentinels, (count, index) => count >= before[index]! + 2, 'The two connections\' failover detectors did not subscribe');
+      await client.close();
+      await untilSubscribed(sentinels, (count, index) => count <= before[index]!, 'close() did not close the failover detectors\' connections');
+    } finally {
+      await client.close();
+      for (const sentinel of sentinels) sentinel.disconnect();
+    }
+  });
+
   // Not "loses no acknowledged write": Sentinel announces +switch-master about a second after it promotes the replica, and
   // the old master acknowledges writes meanwhile that no client can know are lost. What a client can do is leave the old
   // master once the switch is announced, rather than when Sentinel demotes it about 10 s later (#121).
