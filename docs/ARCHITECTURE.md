@@ -38,7 +38,7 @@ The user's security version lives as long as that set, so it is present whenever
 
 A predecessor is consumed atomically. A successor is created separately because the token-hash key is unrelated to the predecessor's key slot. This can produce a safe availability failure after consumption, but cannot produce two valid successors.
 
-The package does not claim rotation idempotency. Network-timeout retry must be handled by a higher-level protocol if required.
+ioredis sends a command again when the connection closes before its reply arrives, so a step whose reply was lost runs twice. Each step of a rotation recognises its own first run: consuming a predecessor already consumed for this rotation's successor, and storing a successor already stored, both succeed. A retry by the application is another rotation, and finds the predecessor consumed. [Commands sent twice](./DEPLOYMENT.md#commands-sent-twice) lists what a second run does across the package.
 
 ## Decision: server time
 

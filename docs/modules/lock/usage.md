@@ -42,7 +42,7 @@ redis.lock.key('order:123'); // myapp:locks:order:123
 
 ### `acquire(name, ttl?)`
 
-Attempts an atomic `SET ... NX PX`. `ttl` is in seconds and may be fractional, down to whole milliseconds. Returns a `LockAcquireResult`, `{ acquired, token }`. The returned token proves ownership and must be treated as a secret. A token is returned even when `acquired` is `false`; it is a fresh one that owns nothing.
+Attempts an atomic `SET ... NX PX`, in a script that also counts a key already holding this call's token as acquired: ioredis sends the command again when the connection closes before the reply arrives, and the second run then finds the key the first one set ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)). `ttl` is in seconds and may be fractional, down to whole milliseconds. Returns a `LockAcquireResult`, `{ acquired, token }`. The returned token proves ownership and must be treated as a secret. A token is returned even when `acquired` is `false`; it is a fresh one that owns nothing.
 
 ```ts
 const result = await redis.lock.acquire('order:123', 15);
@@ -104,6 +104,8 @@ The lock runs on a single Redis node: it is one key on the primary that owns it,
 The old primary can also go on answering for a while after the promotion, and what it acknowledges then is lost: an `acquire()`, or an `extend()` that returns `true` although the promoted replica holds no key. On Sentinel, where the primary is the master, [Sentinel failover](../../DEPLOYMENT.md#sentinel-failover) says how long that window lasts. On Cluster, where it is the master that owns the key's slot, [Cluster failover](../../DEPLOYMENT.md#cluster-failover) says what is known of it.
 
 A holder that must not overlap another for long can call `extend()` before each step that matters and stop when it returns `false`, as in the `extend()` example above. The overlap then lasts at most one step, plus the time the old primary goes on answering.
+
+A `release()` whose reply is lost runs again once ioredis reconnects, finds the lock already released, and returns `false` ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)).
 
 There is no fencing token. The ownership token `acquire()` returns is random, not monotonically increasing, so a resource cannot use it to reject writes from a holder whose lease has lapsed. Do not use the lock as proof that a database transaction committed. When an external resource requires strict stale-writer protection, issue fencing tokens from a store that guarantees them and have the resource check them.
 

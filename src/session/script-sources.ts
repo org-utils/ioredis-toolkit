@@ -10,9 +10,14 @@ export const SCRIPT_SOURCES = {
 -- ARGV[6] this user's session key, less the token hash
 -- ARGV[7] security version to store if the user has none, or '' to leave it alone
 -- Returns {1, evicted token hash...}, or {-1} when the session key is taken. Token locators live in other
--- slots, so deleting an evicted session's locator is left to the caller.
+-- slots, so deleting an evicted session's locator is left to the caller. A key already holding this very record was
+-- stored by this same call, sent again after its reply was lost: it returns {1}, the first run having done the rest. The
+-- token hashes that run evicted are not returned again, so their locators are left to be deleted when next resolved.
 local created = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
-if not created then return {-1} end
+if not created then
+  if redis.call('GET', KEYS[1]) == ARGV[1] then return {1} end
+  return {-1}
+end
 if ARGV[7] ~= '' then redis.call('SET', KEYS[3], ARGV[7], 'NX') end
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 -- The set lives as long as its longest-lived session. Compared here rather than with EXPIRE GT, which Redis 6 lacks.

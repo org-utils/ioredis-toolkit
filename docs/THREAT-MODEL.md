@@ -6,7 +6,7 @@
 | Token brute force | Session lookup | 256-bit random secret | Computationally infeasible; test format rejection |
 | Token enumeration | Authentication existence | Opaque token; safe invalid results | Timing differences should be monitored; public APIs should not expose internal reasons |
 | Session fixation | Login/session identity | Fresh random token creation and rotation | Host auth flow must replace pre-auth session after authentication |
-| Replay after rotation | Consumed session credential | Atomic predecessor consumption | Rotation is non-idempotent; test concurrent rotate |
+| Replay after rotation | Consumed session credential | Atomic predecessor consumption | A second rotation of the same credential is a replay, even one retried by the application after a lost response; only a step ioredis sends again is recognised as the same rotation. Test concurrent rotate |
 | Replay after logout | Session state | revoke/destroy + session set checks | A request already authorized before logout may complete; authorization transaction boundaries remain application-specific |
 | Concurrent attacker requests | Session state | Compare-and-set state transitions and version checks | Test simultaneous touch/update/rotate |
 | Redis outage | Authentication state | Fail closed; storage errors distinct from invalid sessions | Application decides 401 vs 503; never fail open |
