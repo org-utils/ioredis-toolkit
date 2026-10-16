@@ -3,6 +3,8 @@ import { KeyStrategy, ScriptRegistry, containedReporter, type ErrorReporter, typ
 import { LockError, type LockAcquireResult, type LockConfig } from './types.js';
 
 const SCRIPT_SOURCES = {
+  // A key that already holds the caller's token was set by this same acquisition, run again after a lost reply.
+  acquire: `if redis.call('set', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') or redis.call('get', KEYS[1]) == ARGV[1] then return 1 else return 0 end`,
   release: `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`,
   extend: `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end`,
 } as const;
@@ -23,12 +25,16 @@ export class RedisLock {
   /** Builds the physical key for a logical lock name. */
   key(name: string): string { return this.keys.key(name); }
 
-  /** Attempts to acquire a lock and returns a cryptographically random ownership token. */
+  /**
+   * Attempts to acquire a lock and returns a cryptographically random ownership token. Safe to run twice: when ioredis sends
+   * the acquisition again after its reply was lost, a key already holding this token counts as acquired, with the lease
+   * dating from the first run.
+   */
   async acquire(name: string, ttl = this.config.defaultTtl): Promise<LockAcquireResult> {
     const milliseconds = this.leaseMilliseconds(ttl);
     const token = randomBytes(32).toString('base64url');
-    const result = await this.redis.set(this.key(name), token, 'PX', String(milliseconds), 'NX');
-    return { acquired: result === 'OK', token };
+    const acquired = Number(await this.scripts.eval('acquire', [this.key(name)], [token, String(milliseconds)])) === 1;
+    return { acquired, token };
   }
 
   /** Releases a lock only when the supplied ownership token still owns it. */

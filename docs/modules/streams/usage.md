@@ -42,7 +42,7 @@ redis.streams.key('orders'); // myapp:stream:orders
 
 ## `add(name, fields, maxEntries?)`
 
-Appends a record with Redis-generated `*` ID and approximate trimming.
+Appends a record with Redis-generated `*` ID and approximate trimming. When the connection closes before the reply arrives, ioredis sends the `XADD` again once it reconnects, and if Redis had run it, the stream holds two entries with the same fields ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)).
 
 ```ts
 const id = await redis.streams.add('orders', {
@@ -151,6 +151,8 @@ const size = await redis.streams.length('orders');
 ## Operational guidance
 
 Consumer groups create pending-entry state. Production consumers should also implement a pending-entry recovery strategy using native Redis commands appropriate to their workload. This wrapper intentionally keeps its surface small and does not pretend that a single `read()` loop is a complete queue-processing framework.
+
+The same recovery covers a group `read()` whose reply is lost. ioredis sends the `XREADGROUP` again once it reconnects, and if Redis had run it, the entries of the first run are pending for the consumer but never returned: the call returns the next ones. Reading with `id: '0'` returns the consumer's pending entries ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)).
 
 ## Errors
 

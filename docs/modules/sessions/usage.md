@@ -158,6 +158,8 @@ const updated = await sessions.update(token, {
 
 `version` counts the changes an application can see: each `update()` and each status change (rotation, revocation) increments it, and `touch()` does not. If another `update()` changed the record after `expectedVersion` was read, the call throws `SessionConflictError` (code `SESSION_CONFLICT`) instead of overwriting it. Without `expectedVersion`, the patch is applied to whatever is stored. Either way, the patch is applied to the record as stored when it is written, so a touch that landed in between is kept.
 
+An `update()` is not safe to run twice. When the connection closes before the reply arrives, ioredis sends the write again once it reconnects. If Redis had run it, the second run finds the record changed: with `expectedVersion` the call throws `SessionConflictError` although the patch was applied, and without it the patch is applied again and `version` rises by two ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)).
+
 `update()` follows the same rules as `create()` for client details. `ipAddress`, `userAgent` and `deviceId` are stored only when `storeIpAddress`, `storeUserAgent` and `storeDeviceId` are on, and are otherwise ignored. They are capped at 128, 1024 and 256 characters respectively, and a longer value throws `SessionInvalidError`. Passing `null` clears a stored value.
 
 ## `rotate(token)`
@@ -171,6 +173,8 @@ const rotated = await sessions.rotate(token);
 ```
 
 After successful rotation, the predecessor is no longer accepted. Concurrent rotation attempts must not produce multiple valid successors. The successor's rolling idle-timeout window preserves the duration originally configured when the session (or its earliest ancestor) was created, rather than being re-derived from the predecessor's most recent touch — so the idle window does not silently shrink across repeated rotations. If the predecessor is consumed but successor creation then fails, `rotate()` throws `SessionRotationError` rather than leaving the caller with an ambiguous storage error. This is also what a rotation sees when its session is revoked while it is in flight, through its own credential or a predecessor's: either the revocation lands first and the session can no longer be consumed, or it takes the successor's place. So a logout during rotation still logs out.
+
+When the connection closes before a reply arrives, ioredis sends the command again once it reconnects. A rotation recognises its own consume and its own successor when it finds them, so it succeeds once even when a step ran twice; `create()` does the same ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)).
 
 ## `revoke(token)`
 

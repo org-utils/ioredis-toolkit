@@ -53,6 +53,8 @@ The subject is the key's Redis Cluster hash tag. A subject must not be empty or 
 
 Atomically adds `cost` to the current window, in one round trip. Whatever the cost, a window's counter expires when the window ends.
 
+A `consume()` is not safe to run twice. When the connection closes before the reply arrives, ioredis sends it again once it reconnects, and if Redis had run it, the cost is added twice and the result includes both charges. [Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice) says what else a second run changes.
+
 ```ts
 const decision = await redis.rateLimiter.consume('user:42');
 if (!decision.allowed) {

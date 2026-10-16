@@ -53,10 +53,16 @@ export class SessionRepository {
     if (Number(code) !== 1) throw new SessionStorageError('Session creation failed');
     // An evicted session is unusable once its record is gone; its locators live in other slots and are only cleanup.
     if (evicted.length) await this.safeDel(...evicted.map(tokenHash => this.o.keys.tokenLocator(String(tokenHash))));
-    let located: string | null;
-    try { located = await this.o.redis.set(this.o.keys.tokenLocator(record.id), this.o.keys.userTag(record.userId), 'EX', String(ttl), 'NX'); }
+    const locator = this.o.keys.tokenLocator(record.id);
+    const userTag = this.o.keys.userTag(record.userId);
+    let located: boolean;
+    try {
+      // A locator already naming this user was written by this same call, sent again after its reply was lost: no other
+      // session can share a token hash.
+      located = (await this.o.redis.set(locator, userTag, 'EX', String(ttl), 'NX')) === 'OK' || (await this.o.redis.get(locator)) === userTag;
+    }
     catch (error) { throw new SessionStorageError('Session token locator write failed', error); }
-    if (located !== 'OK') {
+    if (!located) {
       await this.safeDel(this.o.keys.session(record.userId, record.id));
       try { await this.o.redis.zrem(this.o.keys.sessionSet(record.userId), record.id); } catch { /* best effort */ }
       throw new SessionStorageError('Session token locator already occupied');
@@ -128,10 +134,12 @@ export class SessionRepository {
 
   /**
    * Consumes a predecessor session for rotation, linking it forward to the successor it is consumed for; of any number of
-   * concurrent callers, exactly one succeeds.
+   * concurrent callers, exactly one succeeds. A predecessor already linked to this successor was consumed by this same
+   * call, its write sent again by ioredis after the reply was lost, so it counts as consumed here.
    */
   async consume(record: SessionRecord, successor: SessionRecord, serverSeconds: number, tombstoneTtl: number): Promise<void> {
     await this.change(record, stored => {
+      if (isRecord(stored) && stored.status === 'consumed' && stored.successorId === successor.id) return { result: undefined };
       if (isRecord(stored) && stored.status === 'consumed') throw new SessionReplayError();
       if (!isRecord(stored) || stored.status === 'revoked' || hasExpired(stored, serverSeconds)) throw new SessionRotationError('Session cannot be rotated');
       const consumed: SessionRecord = { ...stored, status: 'consumed', consumedAt: serverSeconds, successorId: successor.id, successorJti: successor.jti, version: stored.version + 1 };

@@ -43,6 +43,8 @@ Repeated `subscribe()` calls for the same physical channel issue a single underl
 
 JSON-encodes a value and publishes it. The return value is Redis's subscriber count at publication time.
 
+When the connection closes before the reply arrives, ioredis sends the `PUBLISH` again once it reconnects, and if Redis had run it, every subscriber receives the message twice ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)). Handlers that must not act twice need an ID in the message to check.
+
 The value is encoded with `JSON.stringify`. It is rejected with `PUBSUB_SERIALIZATION` when encoding throws (a cyclic structure, or a `BigInt` anywhere in it) or produces nothing (`undefined`, a function or a symbol as the value itself). Anything else is encoded by JSON's own rules, without an error: inside an object, a property holding `undefined`, a function or a symbol is dropped; inside an array, such an element becomes `null`; `NaN` and `Infinity` become `null`; and a `Date` becomes its ISO string. Subscribers receive the encoded shape, not the value that was published.
 
 On Redis Cluster that count covers only the clients subscribed through the node that took the `PUBLISH`. The message still reaches subscribers on every node, so a count of 0 does not mean nobody received it.

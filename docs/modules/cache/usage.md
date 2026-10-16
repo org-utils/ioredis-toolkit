@@ -91,7 +91,7 @@ Returns `true` when Redis accepted the write and `false` for a failed NX/XX cond
 
 ### `setIfAbsent<T>(key, value, ttl?)`
 
-Atomic create-if-absent helper.
+Atomic create-if-absent helper. When the connection closes before the reply arrives, ioredis sends the command again once it reconnects, and if Redis had run it, the second run finds the caller's own value and returns `false` ([Commands sent twice](../../DEPLOYMENT.md#commands-sent-twice)).
 
 ```ts
 const acquired = await redis.cache.setIfAbsent('job:123', { state: 'queued' }, 30);
