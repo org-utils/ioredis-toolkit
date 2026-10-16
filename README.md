@@ -67,7 +67,7 @@ const cluster = createRedisClient({
 });
 ```
 
-On Sentinel, ioredis's `failoverDetector` is on by default, unlike in ioredis itself: every connection the client opens moves to the new master as soon as Sentinel announces a failover, instead of staying on the old master until Sentinel demotes it about 10 s later. A failover still loses the writes the old master acknowledges in the second or so before Sentinel announces it, and no call fails for them. [Sentinel failover](./docs/DEPLOYMENT.md#sentinel-failover) explains that window, what the detector costs in connections, and how to turn it off.
+On Sentinel, ioredis's `failoverDetector` is on by default, unlike in ioredis itself: every connection the client opens moves to the new master as soon as Sentinel announces a failover, instead of staying on the old master until Sentinel demotes it about 10 s later. A failover still loses the writes the old master acknowledges in the second or so before Sentinel announces it, and no call fails for them. [Sentinel failover](./docs/DEPLOYMENT.md#sentinel-failover) explains that window, what the detector costs in connections, and how to turn it off. On Cluster there is no detector: ioredis follows a failover once a `MOVED` reply names the promoted replica, and [Cluster failover](./docs/DEPLOYMENT.md#cluster-failover) explains what a failover there can lose.
 
 ## Shutdown and error visibility
 

@@ -28,6 +28,24 @@ The package turns on ioredis's `failoverDetector` for Sentinel, which ioredis le
 - **Connections.** Every connection the client opens also subscribes on up to `sentinelMaxConnections` sentinels (ioredis's default is 10): the shared connection, the Pub/Sub subscriber and each pooled stream reader. With three sentinels, a client with a subscriber and two stream readers holds 12 sentinel connections. Lower `sentinelMaxConnections` to subscribe on fewer.
 - **Turning it off.** Pass `failoverDetector: false` to keep ioredis's own behaviour, for example where sentinel connections are scarce.
 
+## Cluster failover
+
+Redis Cluster also replicates asynchronously, and each master's slots fail over on their own. What a failover can lose depends on how it happens:
+
+- **Manual failover.** A `CLUSTER FAILOVER` without `FORCE` or `TAKEOVER` pauses the master's clients until its replica has caught up, then promotes the replica and has the old master answer `MOVED`. [Redis documents it](https://redis.io/docs/latest/commands/cluster-failover/) as losing nothing.
+- **Crashed master or forced failover.** A master that crashes, or one failed over with `FORCE` or `TAKEOVER`, loses the writes it acknowledged and had not yet replicated. Neither option waits for the master, so one still running also loses whatever it acknowledges until it learns of the promotion.
+- **Partition.** A master cut off from the majority of masters goes on acknowledging writes until `cluster-node-timeout` (15 s by default) has passed, and only then refuses them. Once its replica on the majority side is promoted, every write it acknowledged since it was cut off is lost: it rejoins as the new master's replica and resyncs from it. No call fails for those writes.
+
+`failoverDetector` is a Sentinel setting, and a Cluster connection has nothing like it. Unless `slotsRefreshInterval` is set (its typings give a default of 5000, but ioredis 6 sets none), ioredis's Cluster client learns of a failover only from the replies to its own commands. A `MOVED` reply sends the command again to the node it names and refreshes the slot map, so once the promoted replica owns the slots, commands follow it there. A `CLUSTERDOWN` reply, or a closed connection while the cluster is ready, sends the command again after 100 ms (`retryDelayOnFailover`, `retryDelayOnClusterDown`) and refreshes the slot map. A command is rejected after 16 such retries (`maxRedirections`), and one sent to a node that stops answering without closing the connection waits unless `commandTimeout` is set.
+
+So a write sent while its master is down either reaches the promoted replica, fails, or waits; it is not lost without a trace. What a failover loses silently is what the master acknowledged and never replicated. A client cut off together with the master learns nothing, since that master still answers for its slots, so no client setting shortens that window.
+
+None of this has been measured. The package's test cluster has three masters and no replicas, and no test fails a master over (see [What CI runs](./TESTING.md#what-ci-runs)), so how much a Cluster failover loses is not known, and the Sentinel numbers above do not carry over.
+
+- **What can be lost.** The same writes as under Sentinel, for the keys in the failed master's slots: cache entries, lock acquisitions, rate-limit counts, and session changes, a revocation included. Treat a lost revocation like the snapshot restore under [Disaster recovery](#disaster-recovery).
+- **Closing the window.** The same settings apply, on each master. `min-replicas-to-write 1` with a small `min-replicas-max-lag` makes a master cut off from its replica refuse writes, with a `NOREPLICAS` error, within that lag instead of after `cluster-node-timeout`. A replica just promoted has no replica of its own until the old master rejoins or another replica moves to it, and refuses writes to its slots until then, so give each master two replicas.
+- **`WAIT` on Cluster.** `WAIT` counts the replicas that have the writes sent before it on the same connection. It names no key, so a Cluster connection sends it to a random master, which says nothing about the write. Send it to the master that took the write instead: create the connection with `createRedisConnection`, pass it to `new RedisClient`, send `WAIT` to each of its `nodes('master')`, which are the connections the client's commands go through, and treat a `0` from any of them as not stored. A connection opened separately, `duplicate()` included, has sent no writes, so `WAIT` on it answers at once and proves nothing.
+
 ## Memory policy
 
 Authentication state should not use an arbitrary eviction policy. `noeviction` is used in the included disposable test environments so memory pressure fails writes instead of silently evicting authentication records. Production capacity and failover requirements must be validated independently.
