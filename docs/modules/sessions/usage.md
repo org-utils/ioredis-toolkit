@@ -186,6 +186,8 @@ A revoked or consumed session's record is kept as a tombstone for the rest of it
 
 `revoke()` given a credential that rotation already consumed ends its successor, the session that replaced it: it follows the rotation chain to its end and revokes the session there, if that one is still active. So a user logging out with a stale cookie is logged out. The consumed credential itself is left as it is, so it keeps validating as `consumed`, and `rotate()` on it keeps throwing `SessionReplayError`. Replay on its own ends no session, because two requests that rotate concurrently look the same as a stolen credential. To end every session of a user when you see `SessionReplayError`, call `revokeAll()`, or `setSecurityVersion()` with `securityVersionEnabled`.
 
+A failover can lose a revocation the old master acknowledged, and the session then authenticates again; [Sentinel failover](../../DEPLOYMENT.md#sentinel-failover) and [Cluster failover](../../DEPLOYMENT.md#cluster-failover) say what each can lose and how to close the window.
+
 ## `destroy(token)`
 
 Permanently removes the session record, its token locator and its member of the user's session set.
@@ -212,6 +214,8 @@ With `securityVersionEnabled`, `create()` requires `securityVersion`, and a sess
 
 The stored version expires with the user's sessions. It lives as long as the user's longest-lived session, and `create()` extends it, never shortening it. After `setSecurityVersion()` it lives for at least the configured session `ttl` as well. Once it has expired, the user has no session left for it to invalidate, and the next `create()` stores the version it is given, as for a new user. So after a bump, a user with no sessions for longer than the session `ttl` can be given a session with the previous version; pass the user's current version to `create()`.
 
+A failover can lose a bump the old master acknowledged, and the sessions it meant to invalidate then validate again; [Sentinel failover](../../DEPLOYMENT.md#sentinel-failover) and [Cluster failover](../../DEPLOYMENT.md#cluster-failover) say what each can lose and how to close the window.
+
 ## `revokeAll(userId, limit?)`
 
 Ends a bounded batch of the user's sessions and returns `{ affected, remaining }` so a large session set does not require loading every session into memory. Despite its name, it destroys rather than revokes them: they are deleted outright, with no tombstone, so their credentials then validate as `not_found`. A `limit` greater than `maxBatchSize` is capped at `maxBatchSize` without error. It works the same on standalone Redis and on Cluster.
@@ -224,6 +228,8 @@ while (page.remaining > 0) {
 ```
 
 Use bounded loops or background jobs for users with unusually large session counts.
+
+A failover can lose a batch the old master acknowledged, and its sessions then authenticate again; [Sentinel failover](../../DEPLOYMENT.md#sentinel-failover) and [Cluster failover](../../DEPLOYMENT.md#cluster-failover) say what each can lose and how to close the window.
 
 ## `list(userId, offset?, limit?)`
 
