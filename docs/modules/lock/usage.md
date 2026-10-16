@@ -99,7 +99,11 @@ If acquisition fails, `using()` throws a `LockError` with code `LOCK_HELD` inste
 
 This is a lease, not a consensus protocol. If the process pauses longer than the TTL, another owner may acquire the lock. Choose TTLs that safely cover the critical section and extend them when necessary.
 
-The lock runs on a single Redis node: it is one key on the primary that owns it, not Redlock across independent nodes. Replication to replicas is asynchronous, so if the primary fails over before the lock key reaches a replica, the promoted replica does not hold it and a second caller can acquire the same lock while the first still believes it holds it. For that brief window two holders can exist.
+The lock runs on a single Redis node: it is one key on the primary that owns it, not Redlock across independent nodes. Replication to replicas is asynchronous, so if the primary fails over before the lock key reaches a replica, the promoted replica does not hold it and a second caller can acquire the same lock while the first still believes it holds it. The first holder is not told until its next `extend()` or `release()` returns `false`, and `using()` does not report a `release()` that returns `false`. Until then two holders can exist, for up to the first holder's remaining lease when the TTL covers its work, as it should.
+
+The old primary can also go on answering for a while after the promotion, and what it acknowledges then is lost: an `acquire()`, or an `extend()` that returns `true` although the promoted replica holds no key. On Sentinel, where the primary is the master, [Sentinel failover](../../DEPLOYMENT.md#sentinel-failover) says how long that window lasts.
+
+A holder that must not overlap another for long can call `extend()` before each step that matters and stop when it returns `false`, as in the `extend()` example above. The overlap then lasts at most one step, plus the time the old primary goes on answering.
 
 There is no fencing token. The ownership token `acquire()` returns is random, not monotonically increasing, so a resource cannot use it to reject writes from a holder whose lease has lapsed. Do not use the lock as proof that a database transaction committed. When an external resource requires strict stale-writer protection, issue fencing tokens from a store that guarantees them and have the resource check them.
 
